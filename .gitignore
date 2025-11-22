@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# OS
+.DS_Store
+
+# Project specific
+*.db
+*.sqlite3
+recordings/
+thumbnails/
+consent_gallery/
+backups/
+live_thumbnails/
+test_snapshot/
+*.jpg
+*.png
+*.mp4
+
+# Models (optional, usually better to download them)
+# *.pt
+# *.onnx

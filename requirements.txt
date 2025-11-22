@@ -1,0 +1,29 @@
+# Core dependencies for face tracking and counting system
+# Optimized for Apple Silicon (M3) with MPS acceleration
+
+# Computer Vision and ML
+ultralytics>=8.2.0
+opencv-python>=4.8.0
+opencv-contrib-python>=4.8.0
+
+# Face Recognition
+numpy>=1.24.0,<2.0.0
+insightface>=0.7.3
+onnxruntime>=1.16.0
+
+# Data Processing
+pillow>=10.0.0
+scikit-learn>=1.3.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# Web Framework and API
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+httpx>=0.27.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0
