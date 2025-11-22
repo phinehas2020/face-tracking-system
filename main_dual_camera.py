@@ -104,7 +104,8 @@ global_stats = {
     "count_drift": 0,
     "last_body_event": None,
     "peer_status": "disabled",
-    "peer_url": PEER_URL
+    "peer_url": PEER_URL,
+    "peer_data": None
 }
 
 COUNTER_INSTANCE = None
@@ -121,6 +122,7 @@ class StatsResponse(BaseModel):
     count_drift: int
     last_body_event: Optional[str] = None
     peer_status: str
+    peer_data: Optional[Dict] = None
     timestamp: str
 
 class SyncFaceRequest(BaseModel):
@@ -1415,6 +1417,7 @@ async def get_stats():
             count_drift=global_stats["count_drift"],
             last_body_event=global_stats["last_body_event"],
             peer_status=global_stats["peer_status"],
+            peer_data=global_stats["peer_data"],
             timestamp=datetime.now().isoformat()
         )
 
@@ -1530,15 +1533,22 @@ async def monitor_peer_connection():
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(f"{PEER_URL}/", timeout=2.0)
-                status = "connected" if response.status_code == 200 else "error"
+                response = await client.get(f"{PEER_URL}/stats", timeout=2.0)
+                if response.status_code == 200:
+                    status = "connected"
+                    data = response.json()
+                else:
+                    status = "error"
+                    data = None
         except Exception:
             status = "error"
+            data = None
         
         with stats_lock:
             global_stats["peer_status"] = status
+            global_stats["peer_data"] = data
             
-        await asyncio.sleep(30)
+        await asyncio.sleep(5)  # Check more frequently for live updates
 
 def run_api(port=8000):
     """Run FastAPI server in a separate thread"""

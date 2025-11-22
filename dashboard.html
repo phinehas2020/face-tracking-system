@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -31,7 +32,7 @@
         .header h1 {
             font-size: 2.5rem;
             margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
         }
 
         .header p {
@@ -43,7 +44,7 @@
             display: inline-flex;
             align-items: center;
             gap: 8px;
-            background: rgba(255,255,255,0.2);
+            background: rgba(255, 255, 255, 0.2);
             padding: 8px 16px;
             border-radius: 20px;
             margin-top: 10px;
@@ -67,9 +68,9 @@
         }
 
         .metric-card {
-            background: rgba(255,255,255,0.1);
+            background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.2);
+            border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 20px;
             padding: 30px;
             text-align: center;
@@ -79,7 +80,35 @@
 
         .metric-card:hover {
             transform: translateY(-5px);
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 20px;
+            padding: 30px;
+            text-align: center;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            animation: slideUp 0.5s ease-out;
+        }
+
+        .stat-card.grand-total {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            grid-column: span 2;
+            /* Make it wider */
+        }
+
+        .stat-card.grand-total .stat-value {
+            color: white;
+            font-size: 3em;
+        }
+
+        .stat-card.grand-total .stat-label {
+            color: rgba(255, 255, 255, 0.9);
+            font-weight: bold;
         }
 
         .metric-icon {
@@ -87,14 +116,16 @@
             margin-bottom: 15px;
         }
 
-        .metric-value {
+        .metric-value,
+        .stat-value {
             font-size: 3rem;
             font-weight: bold;
             margin-bottom: 10px;
             line-height: 1;
         }
 
-        .metric-label {
+        .metric-label,
+        .stat-label {
             font-size: 1rem;
             opacity: 0.8;
             text-transform: uppercase;
@@ -124,9 +155,9 @@
         .occupancy-bar {
             width: 100%;
             max-width: 1200px;
-            background: rgba(255,255,255,0.1);
+            background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.2);
+            border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 20px;
             padding: 30px;
             margin-bottom: 30px;
@@ -149,7 +180,7 @@
         .person-icon {
             width: 40px;
             height: 40px;
-            background: rgba(255,255,255,0.3);
+            background: rgba(255, 255, 255, 0.3);
             border-radius: 50%;
             display: flex;
             align-items: center;
@@ -180,8 +211,13 @@
         }
 
         @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
         }
 
         @keyframes slideUp {
@@ -189,6 +225,7 @@
                 opacity: 0;
                 transform: translateY(20px);
             }
+
             to {
                 opacity: 1;
                 transform: translateY(0);
@@ -196,18 +233,31 @@
         }
 
         @keyframes pulse {
-            0%, 100% {
+
+            0%,
+            100% {
                 opacity: 1;
             }
+
             50% {
                 opacity: 0.5;
             }
         }
 
         @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            25% { transform: translateX(-10px); }
-            75% { transform: translateX(10px); }
+
+            0%,
+            100% {
+                transform: translateX(0);
+            }
+
+            25% {
+                transform: translateX(-10px);
+            }
+
+            75% {
+                transform: translateX(10px);
+            }
         }
 
         .increase {
@@ -221,8 +271,15 @@
         }
 
         @keyframes flash {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.3;
+            }
         }
 
         /* Responsive Design */
@@ -230,9 +287,12 @@
             .header h1 {
                 font-size: 2rem;
             }
-            .metric-value {
+
+            .metric-value,
+            .stat-value {
                 font-size: 2.5rem;
             }
+
             .dashboard {
                 grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             }
@@ -241,9 +301,9 @@
         .chart-container {
             width: 100%;
             max-width: 1200px;
-            background: rgba(255,255,255,0.1);
+            background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.2);
+            border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 20px;
             padding: 30px;
             margin-bottom: 30px;
@@ -252,9 +312,9 @@
         .activity-log {
             width: 100%;
             max-width: 1200px;
-            background: rgba(255,255,255,0.1);
+            background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.2);
+            border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 20px;
             padding: 30px;
             margin-bottom: 30px;
@@ -263,9 +323,9 @@
         .camera-config {
             width: 100%;
             max-width: 1200px;
-            background: rgba(255,255,255,0.1);
+            background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.2);
+            border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 20px;
             padding: 30px;
             margin-bottom: 30px;
@@ -294,7 +354,9 @@
             opacity: 0.8;
         }
 
-        select, button, input[type="checkbox"] {
+        select,
+        button,
+        input[type="checkbox"] {
             padding: 10px;
             border-radius: 10px;
             border: none;
@@ -322,7 +384,7 @@
         .log-entry {
             padding: 10px;
             margin: 5px 0;
-            background: rgba(255,255,255,0.05);
+            background: rgba(255, 255, 255, 0.05);
             border-radius: 10px;
             display: flex;
             justify-content: space-between;
@@ -338,6 +400,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="header">
         <h1>People Counter Dashboard</h1>
@@ -357,11 +420,17 @@
     </div>
 
     <div class="dashboard">
-        <div class="metric-card">
-            <div class="metric-icon">👥</div>
-            <div class="metric-value" id="unique-visitors">0</div>
-            <div class="metric-label">Unique Visitors</div>
-            <div class="metric-change" id="unique-change"></div>
+        <div class="stats-grid">
+            <div class="stat-card grand-total">
+                <div class="stat-value" id="grand-total-visitors">0</div>
+                <div class="stat-label">Grand Total Visitors (Both Booths)</div>
+            </div>
+            <div class="stat-card">
+                <div class="metric-icon">👥</div>
+                <div class="stat-value" id="unique-visitors">0</div>
+                <div class="stat-label">Local Unique Visitors</div>
+                <div class="metric-change" id="unique-change"></div>
+            </div>
         </div>
 
         <div class="metric-card">
@@ -424,7 +493,8 @@
 
     <div class="camera-config">
         <h2>Camera Configuration</h2>
-        <p style="opacity:0.8; margin-bottom:15px;">Pick which camera acts as ENTRY vs EXIT. If you only have one camera, enable split mode to simulate two halves.</p>
+        <p style="opacity:0.8; margin-bottom:15px;">Pick which camera acts as ENTRY vs EXIT. If you only have one
+            camera, enable split mode to simulate two halves.</p>
         <div class="config-row">
             <div class="config-field">
                 <label for="entry-camera-select">Entry Camera Index</label>
@@ -526,7 +596,7 @@
                     const stationStatus = document.getElementById('station-status');
                     const stationDot = document.getElementById('station-dot');
                     const stationText = document.getElementById('station-text');
-                    
+
                     if (data.peer_status && data.peer_status !== 'disabled') {
                         stationStatus.style.display = 'inline-flex';
                         if (data.peer_status === 'connected') {
@@ -539,6 +609,17 @@
                     } else {
                         stationStatus.style.display = 'none';
                     }
+
+                    // Calculate Grand Totals
+                    let grandTotalVisitors = data.unique_visitors;
+                    let grandTotalOccupancy = data.current_occupancy;
+
+                    if (data.peer_data) {
+                        grandTotalVisitors += (data.peer_data.unique_visitors || 0);
+                        grandTotalOccupancy += (data.peer_data.current_occupancy || 0);
+                    }
+
+                    updateMetric('grand-total-visitors', grandTotalVisitors, 'grand-change');
 
                     // Update values with animation
                     updateMetric('unique-visitors', data.unique_visitors, 'unique-change');
@@ -620,7 +701,7 @@
                     changeElement.textContent = `↓ ${diff}`;
                     changeElement.className = 'metric-change decrease';
                 }
-                
+
                 // Animate the card
                 element.parentElement.style.animation = 'none';
                 setTimeout(() => {
@@ -662,7 +743,7 @@
             const container = document.getElementById('occupancy-visual');
             const maxCapacity = 50; // Adjust based on your needs
             const percent = Math.min(100, (occupancy / maxCapacity) * 100);
-            
+
             document.getElementById('occupancy-percent').textContent = `${percent.toFixed(0)}% capacity`;
 
             // Update person icons
@@ -680,7 +761,7 @@
             const alertText = document.getElementById('alert-text');
             alertText.textContent = message;
             alert.classList.add('show');
-            
+
             if (type === 'entry') {
                 alert.style.borderColor = 'rgba(0, 255, 0, 0.5)';
                 alert.style.background = 'rgba(0, 255, 0, 0.2)';
@@ -702,9 +783,9 @@
                 <span>${message}</span>
                 <span>${new Date().toLocaleTimeString()}</span>
             `;
-            
+
             container.insertBefore(entry, container.firstChild);
-            
+
             // Keep only last 10 entries
             while (container.children.length > 10) {
                 container.removeChild(container.lastChild);
@@ -714,7 +795,7 @@
         function updateChart() {
             // Clear canvas
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
+
             if (activityHistory.length < 2) return;
 
             // Draw grid
@@ -739,7 +820,7 @@
             activityHistory.forEach((point, index) => {
                 const x = index * xStep;
                 const y = canvas.height - (point.occupancy / maxOccupancy) * canvas.height * 0.8 - 10;
-                
+
                 if (index === 0) {
                     ctx.moveTo(x, y);
                 } else {
@@ -754,7 +835,7 @@
             activityHistory.forEach((point, index) => {
                 const x = index * xStep;
                 const y = canvas.height - (point.occupancy / maxOccupancy) * canvas.height * 0.8 - 10;
-                
+
                 ctx.beginPath();
                 ctx.arc(x, y, 3, 0, Math.PI * 2);
                 ctx.fill();
@@ -841,21 +922,22 @@
                 },
                 body: JSON.stringify(payload)
             })
-            .then(response => {
-                if (!response.ok) {
-                    return response.json().then(err => { throw err; });
-                }
-                return response.json();
-            })
-            .then(() => {
-                cameraStatus.textContent = '✅ Cameras updated. Give it a second for the feed to refresh.';
-            })
-            .catch(err => {
-                console.error(err);
-                const detail = err?.detail || err?.message || 'Unknown error';
-                cameraStatus.textContent = `❌ Failed to update cameras: ${detail}`;
-            });
+                .then(response => {
+                    if (!response.ok) {
+                        return response.json().then(err => { throw err; });
+                    }
+                    return response.json();
+                })
+                .then(() => {
+                    cameraStatus.textContent = '✅ Cameras updated. Give it a second for the feed to refresh.';
+                })
+                .catch(err => {
+                    console.error(err);
+                    const detail = err?.detail || err?.message || 'Unknown error';
+                    cameraStatus.textContent = `❌ Failed to update cameras: ${detail}`;
+                });
         }
     </script>
 </body>
+
 </html>
