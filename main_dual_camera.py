@@ -278,7 +278,80 @@ class DualCameraCounter:
         self.db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         self.db_conn.execute("PRAGMA foreign_keys = ON")
         self._ensure_schema()
+        self._migrate_temp_ids()
         logger.info(f"Connected to database: {DB_PATH}")
+
+    def _migrate_temp_ids(self):
+        """Migrate legacy temp_ IDs to visitor_N format"""
+        cursor = self.db_conn.cursor()
+        
+        # 1. Determine next available visitor index from DB
+        cursor.execute("SELECT name FROM persons WHERE name LIKE 'Visitor %'")
+        max_idx = 0
+        for (name,) in cursor.fetchall():
+            try:
+                idx = int(name.split(" ")[1])
+                if idx > max_idx:
+                    max_idx = idx
+            except ValueError:
+                pass
+        
+        current_idx = max_idx + 1
+        
+        # 2. Find temp IDs
+        cursor.execute("SELECT person_id, thumbnail_path FROM persons WHERE person_id LIKE 'temp_%'")
+        temp_rows = cursor.fetchall()
+        
+        if not temp_rows:
+            return
+
+        logger.info(f"Migrating {len(temp_rows)} legacy temp IDs...")
+        
+        for temp_id, old_thumb_path in temp_rows:
+            new_id = f"visitor_{current_idx}"
+            new_name = f"Visitor {current_idx}"
+            current_idx += 1
+            
+            # Rename folder
+            old_folder = BASE_DIR / "consent_gallery" / "auto_learned" / temp_id
+            new_folder = BASE_DIR / "consent_gallery" / "auto_learned" / new_id
+            
+            new_thumb_path = old_thumb_path
+            if old_folder.exists():
+                try:
+                    if new_folder.exists():
+                        import shutil
+                        shutil.rmtree(new_folder)
+                    old_folder.rename(new_folder)
+                    
+                    # Update thumbnail path string if it contains the old ID
+                    if old_thumb_path and temp_id in old_thumb_path:
+                        new_thumb_path = old_thumb_path.replace(temp_id, new_id)
+                except Exception as e:
+                    logger.error(f"Failed to move folder {old_folder} to {new_folder}: {e}")
+            
+            # Update DB tables
+            try:
+                # Create new person record
+                cursor.execute("""
+                    INSERT INTO persons (person_id, name, consent_ts, thumbnail_path)
+                    SELECT ?, ?, consent_ts, ? FROM persons WHERE person_id = ?
+                """, (new_id, new_name, new_thumb_path, temp_id))
+                
+                # Move children
+                cursor.execute("UPDATE faces SET person_id = ? WHERE person_id = ?", (new_id, temp_id))
+                cursor.execute("UPDATE crossings SET person_id = ? WHERE person_id = ?", (new_id, temp_id))
+                
+                # Delete old person record
+                cursor.execute("DELETE FROM persons WHERE person_id = ?", (temp_id,))
+                
+                logger.info(f"Migrated {temp_id} -> {new_id}")
+                
+            except Exception as e:
+                logger.error(f"Database migration failed for {temp_id}: {e}")
+                
+        self.db_conn.commit()
+        self.next_visitor_idx = current_idx
 
     def _ensure_schema(self):
         """Ensure new columns exist for older databases"""
