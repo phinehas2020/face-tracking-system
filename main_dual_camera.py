@@ -675,14 +675,16 @@ class DualCameraCounter:
                 key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
             )
 
-            if getattr(largest_face, "det_score", 1.0) < 0.5:
+            # Stricter detection score (was 0.5)
+            if getattr(largest_face, "det_score", 1.0) < 0.65:
                 logger.debug(f"Rejected face due to low detection score: {largest_face.det_score:.2f}")
                 return None, None
 
             pose = getattr(largest_face, "pose", None)
             if pose is not None:
                 yaw, pitch, roll = map(abs, pose)
-                if yaw > MAX_FACE_YAW_DEG or pitch > MAX_FACE_PITCH_DEG:
+                # Stricter pose limits (was 40)
+                if yaw > 30 or pitch > 30:
                     logger.debug(
                         "Rejected face due to pose (yaw %.1f°, pitch %.1f°)", yaw, pitch
                     )
@@ -691,6 +693,13 @@ class DualCameraCounter:
             face_width = largest_face.bbox[2] - largest_face.bbox[0]
             face_height = largest_face.bbox[3] - largest_face.bbox[1]
             if face_width < MIN_FACE_SIZE or face_height < MIN_FACE_SIZE:
+                return None, None
+                
+            # Check face-to-crop ratio to avoid tiny faces in large crops (background people)
+            face_area = face_width * face_height
+            crop_area = person_crop.shape[0] * person_crop.shape[1]
+            if crop_area > 0 and (face_area / crop_area) < 0.03:
+                logger.debug("Rejected face: too small relative to person crop")
                 return None, None
 
             embedding = largest_face.embedding / np.linalg.norm(largest_face.embedding)
@@ -1468,7 +1477,14 @@ async def sync_face(request: SyncFaceRequest):
                  except ValueError:
                      pass
                      
+                     pass
+                     
              logger.info(f"PEER SYNC RECEIVED: Loaded person {request.name} (ID: {request.person_id}) from peer station")
+             
+             # Check for duplicates and merge if necessary
+             merged_id = app.state.counter.merge_if_duplicate(request.person_id)
+             if merged_id != request.person_id:
+                 logger.info(f"PEER SYNC MERGE: {request.person_id} merged into {merged_id}")
         
         return {"status": "synced"}
         
