@@ -45,6 +45,13 @@ then
         echo -e "${GREEN}✓ Old database backed up to: $backup_name${NC}"
     fi
 
+    if [ -d "consent_gallery" ]; then
+        gallery_backup="backups/consent_gallery_${timestamp}"
+        mv consent_gallery "$gallery_backup"
+        echo -e "${GREEN}✓ Consent gallery backed up to: $gallery_backup${NC}"
+    fi
+    mkdir -p consent_gallery/auto_learned
+
     if [ -d "thumbnails" ]; then
         thumb_backup="backups/thumbnails_${timestamp}"
         mv thumbnails "$thumb_backup"
@@ -84,6 +91,14 @@ CREATE TABLE crossings (
 CREATE INDEX idx_crossings_person ON crossings(person_id);
 CREATE INDEX idx_crossings_time ON crossings(t_cross);
 CREATE INDEX idx_faces_person ON faces(person_id);
+
+CREATE TABLE body_crossings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    direction TEXT NOT NULL CHECK(direction IN ('in', 'out')),
+    t_cross REAL NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_body_crossings_time ON body_crossings(t_cross);
 EOF
     
     echo -e "${GREEN}✓ Fresh database created${NC}"
