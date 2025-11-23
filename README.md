@@ -90,13 +90,14 @@ Need to count everyone entering through two separate doors without tracking exit
 
 ## Configuration
 
-Edit these constants in `main.py`:
+Tune runtime behavior in [`config.py`](config.py):
 
-```python
-FACE_MATCH_THRESHOLD = 0.4  # Similarity threshold (0-1, lower = stricter)
-DOOR_Y_POSITION = 0.5       # Virtual line position (0.5 = middle)
-MIN_FACE_SIZE = 50          # Minimum face size in pixels
-```
+- **Face matching:** `FACE_MATCH_THRESHOLD` sets the primary similarity bar; `FALLBACK_MATCH_THRESHOLD` and `PERSON_MERGE_THRESHOLD` control how aggressively IDs are reused or merged.
+- **Detection quality:** `MIN_FACE_SIZE`, `MAX_FACE_YAW_DEG`, and `MAX_FACE_PITCH_DEG` filter out small or poorly oriented faces.
+- **Cooldowns & timing:** `FACE_COOLDOWN_TIME`, `RECENT_PERSON_WINDOW`, and `EMBEDDING_REFRESH_INTERVAL` govern how quickly the same person can be counted again and how often embeddings are refreshed.
+- **Recording options:** Toggle `ENABLE_RECORDING`, and adjust `RECORDING_SEGMENT_DURATION` or `RECORDING_FRAME_RATE` to balance storage with fidelity.
+
+No manual constant edits in `main.py` are required—use `config.py` to adjust thresholds and behavior in one place.
 
 ## Database Schema
 
