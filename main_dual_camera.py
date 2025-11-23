@@ -408,6 +408,13 @@ class DualCameraCounter:
 
         self.last_embedding_update[person_id] = now
         self.add_embedding(person_id, embedding, persist=False)
+        logger.info(f"Refreshed embedding for {person_id}")
+        
+        # Sync update to peer
+        if PEER_URL:
+             # Use current name (which is just ID now)
+             name = person_id
+             Thread(target=self.sync_to_peer, args=(person_id, name, embedding), daemon=True).start()
 
     def update_camera_config(self, entry_cam: CameraSource, exit_cam: CameraSource, split_screen: bool = False) -> Tuple[bool, str]:
         """Request a camera configuration change"""
@@ -1424,17 +1431,16 @@ async def sync_face(request: SyncFaceRequest):
         
         # Check if person already exists
         cursor.execute("SELECT 1 FROM persons WHERE person_id = ?", (request.person_id,))
-        if cursor.fetchone():
-            conn.close()
-            return {"status": "exists"}
-            
-        # Insert person
-        cursor.execute("""
-            INSERT INTO persons (person_id, name, consent_ts)
-            VALUES (?, ?, ?)
-        """, (request.person_id, request.name, datetime.now().isoformat()))
+        exists = cursor.fetchone()
         
-        # Insert face
+        if not exists:
+            # Insert person
+            cursor.execute("""
+                INSERT INTO persons (person_id, name, consent_ts)
+                VALUES (?, ?, ?)
+            """, (request.person_id, request.name, datetime.now().isoformat()))
+        
+        # Always insert face (even if person exists, this is a new embedding)
         cursor.execute("""
             INSERT INTO faces (person_id, embedding, created_ts)
             VALUES (?, ?, ?)
