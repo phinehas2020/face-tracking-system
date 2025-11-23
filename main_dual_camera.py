@@ -818,21 +818,25 @@ class DualCameraCounter:
                 return None  # Too soon, skip
 
         # Record entry
-        if person_id not in self.active_persons:
-            final_id = person_id
-            history = self.person_last_seen.setdefault(person_id, {})
+        final_id = person_id
+        
+        # Check if we need to convert temp ID to permanent
+        # Do this even if they are already active, in case they were active as temp
+        if person_id.startswith('temp_'):
+            merged_id = self.create_permanent_person(person_id, embedding, face_image)
+            if merged_id != person_id:
+                final_id = merged_id
+                # Migrate history if needed
+                if person_id in self.person_last_seen:
+                    history = self.person_last_seen.pop(person_id)
+                    self.person_last_seen.setdefault(final_id, {}).update(history)
+                if person_id in self.active_persons:
+                    self.active_persons.discard(person_id)
 
-            if person_id.startswith('temp_'):
-                merged_id = self.create_permanent_person(person_id, embedding, face_image)
-                if merged_id != person_id:
-                    final_id = merged_id
-                    merged_history = self.person_last_seen.setdefault(final_id, {})
-                    merged_history.update(history)
-                    history = merged_history
-                    if person_id in self.person_last_seen:
-                        del self.person_last_seen[person_id]
-            
+        if final_id not in self.active_persons:
+            history = self.person_last_seen.setdefault(final_id, {})
             history['entry'] = current_time
+            
             if appearance_signature is not None:
                 self._remember_appearance(final_id, appearance_signature, current_time)
 
@@ -846,8 +850,6 @@ class DualCameraCounter:
                 self.log_crossing(final_id, 'in', current_time)
 
             self.active_persons.add(final_id)
-            if final_id != person_id and person_id in self.active_persons:
-                self.active_persons.discard(person_id)
 
             # Update stats
             self.update_stats()
