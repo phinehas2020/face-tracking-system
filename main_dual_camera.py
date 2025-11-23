@@ -987,27 +987,42 @@ class DualCameraCounter:
 
         cursor = self.db_conn.cursor()
 
+        # Generate new ID and Name
+        new_id = f"visitor_{self.next_visitor_idx}"
         name = f"Visitor {self.next_visitor_idx}"
         self.next_visitor_idx += 1
+        
         consent_ts = datetime.now().isoformat()
-        thumbnail_path = self.save_thumbnail(temp_id, face_image)
+        
+        # Use new_id for thumbnail so folder is named correctly
+        thumbnail_path = self.save_thumbnail(new_id, face_image)
 
         cursor.execute("""
             INSERT OR IGNORE INTO persons (person_id, name, consent_ts, thumbnail_path)
             VALUES (?, ?, ?, ?)
-        """, (temp_id, name, consent_ts, thumbnail_path))
+        """, (new_id, name, consent_ts, thumbnail_path))
 
         if thumbnail_path:
-            self.person_thumbnails[temp_id] = thumbnail_path
+            self.person_thumbnails[new_id] = thumbnail_path
 
         self.db_conn.commit()
-        logger.info(f"Created permanent person: {temp_id} ({name})")
+        logger.info(f"Created permanent person: {new_id} ({name})")
         
         # Update name cache
-        self.person_names[temp_id] = name
+        self.person_names[new_id] = name
 
-        # Store embedding in DB & memory
-        self.add_embedding(temp_id, embedding, persist=True)
+        # Store embedding in DB & memory using NEW ID
+        self.add_embedding(new_id, embedding, persist=True)
+        self.last_embedding_update[new_id] = time.time()
+
+        # Remove temp record if present
+        self.temp_embeddings.pop(temp_id, None)
+        
+        # Sync to peer if configured
+        if PEER_URL:
+            Thread(target=self.sync_to_peer, args=(new_id, name, embedding), daemon=True).start()
+
+        return new_id
         self.last_embedding_update[temp_id] = time.time()
 
         # Remove temp record if present
