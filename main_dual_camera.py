@@ -972,6 +972,10 @@ class DualCameraCounter:
     
     def create_permanent_person(self, temp_id, embedding, face_image=None):
         """Convert temporary person to permanent in database"""
+        # Check if already converted
+        if temp_id in self.person_names and self.person_names[temp_id].startswith("Person "):
+            return temp_id
+
         cursor = self.db_conn.cursor()
 
         name = f"Person {self.next_person_idx}"
