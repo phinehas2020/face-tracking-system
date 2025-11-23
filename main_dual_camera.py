@@ -227,8 +227,6 @@ class DualCameraCounter:
         self.active_persons = set()  # Currently inside the premises
         self.active_persons = set()  # Currently inside the premises
         self.appearance_signatures = {}  # person_id -> (signature_vec, ts)
-        self.person_names = {}  # person_id -> name
-        self.next_person_idx = 1
         self.camera_lock = Lock()
         self.camera_reload_requested = False
         self._last_entry_latency_log = 0.0
@@ -316,22 +314,9 @@ class DualCameraCounter:
             self.known_embeddings[person_id].append(embedding)
             if thumbnail_path and person_id not in self.person_thumbnails:
                 self.person_thumbnails[person_id] = thumbnail_path
-            
-            # Cache name
-            self.person_names[person_id] = name
-            
-            # Update sequential counter if applicable
-            if name and name.startswith("Person "):
-                try:
-                    idx = int(name.split(" ")[1])
-                    if idx >= self.next_person_idx:
-                        self.next_person_idx = idx + 1
-                except ValueError:
-                    pass
-                    
             logger.debug(f"Loaded embedding for {name} (ID: {person_id})")
         
-        logger.info(f"Loaded embeddings for {len(self.known_embeddings)} known people. Next ID: {self.next_person_idx}")
+        logger.info(f"Loaded embeddings for {len(self.known_embeddings)} known people")
 
     def list_available_cameras(self, max_devices: int = 6) -> List[Dict[str, int]]:
         """Probe a handful of device indices to see which cameras respond"""
@@ -756,6 +741,8 @@ class DualCameraCounter:
             self.temp_embeddings.pop(temp_id, None)
             self.person_last_seen.pop(temp_id, None)
 
+        # Check primary match threshold
+        if best_match and best_similarity >= FACE_MATCH_THRESHOLD:
             logger.info(
                 f"MATCH FOUND: Face matched to {best_match} (temp={match_is_temp}) with similarity {best_similarity:.3f}"
             )
@@ -972,14 +959,9 @@ class DualCameraCounter:
     
     def create_permanent_person(self, temp_id, embedding, face_image=None):
         """Convert temporary person to permanent in database"""
-        # Check if already converted
-        if temp_id in self.person_names and self.person_names[temp_id].startswith("Person "):
-            return temp_id
-
         cursor = self.db_conn.cursor()
 
-        name = f"Person {self.next_person_idx}"
-        self.next_person_idx += 1
+        name = temp_id  # Use ID as name for now
         consent_ts = datetime.now().isoformat()
         thumbnail_path = self.save_thumbnail(temp_id, face_image)
 
@@ -992,10 +974,7 @@ class DualCameraCounter:
             self.person_thumbnails[temp_id] = thumbnail_path
 
         self.db_conn.commit()
-        logger.info(f"Created permanent person: {temp_id} ({name})")
-        
-        # Update name cache
-        self.person_names[temp_id] = name
+        logger.info(f"Created permanent person: {temp_id}")
 
         # Store embedding in DB & memory
         self.add_embedding(temp_id, embedding, persist=True)
@@ -1240,12 +1219,7 @@ class DualCameraCounter:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 
                 if person_id:
-                    # Use name if available, otherwise ID
-                    display_name = self.person_names.get(person_id, person_id)
-                    if display_name.startswith("temp_"):
-                        display_name = "Analyzing..."
-                        
-                    label = f"{display_name}"
+                    label = f"{person_id[:10]}"
                     if match_hint == "assist":
                         label += " ·A"
                     cv2.putText(frame, label, (x1, y1 - 10), 
@@ -1472,19 +1446,6 @@ async def sync_face(request: SyncFaceRequest):
         # Update in-memory known embeddings
         if hasattr(app.state, 'counter') and app.state.counter:
              app.state.counter.add_embedding(request.person_id, embedding, persist=False)
-             app.state.counter.person_names[request.person_id] = request.name
-             
-             # Update sequence if needed
-             if request.name.startswith("Person "):
-                 try:
-                     idx = int(request.name.split(" ")[1])
-                     if idx >= app.state.counter.next_person_idx:
-                         app.state.counter.next_person_idx = idx + 1
-                 except ValueError:
-                     pass
-                     
-                     pass
-                     
              logger.info(f"PEER SYNC RECEIVED: Loaded person {request.name} (ID: {request.person_id}) from peer station")
              
              # Check for duplicates and merge if necessary
