@@ -6,7 +6,7 @@ A real-time people counting system with facial recognition, dwell-time tracking,
 
 - 🎥 **Real-time Video Processing**: Uses YOLO v8 with ByteTrack for robust people detection and tracking
 - 👤 **Face Recognition**: InsightFace (ArcFace) for accurate face embedding and 1:N matching
-- 🚪 **Direction Detection**: Tracks entry/exit events when people cross a virtual line
+- 🚪 **Entry Counting Only**: Two entry viewpoints (A/B) to maximize face capture; exits are not tracked
 - 📊 **Analytics Dashboard**: FastAPI endpoint providing real-time statistics
 - 💾 **Persistent Storage**: SQLite database for tracking visitors and events
 - 🖼️ **Face Thumbnails**: Automatically saves a 200x200 snapshot per person for auditing
@@ -34,9 +34,9 @@ python database_init.py     # optional: populate /Users/phinehasadams/Desktop/fa
 ```
 
 - Dashboard: `http://localhost:8081/dashboard.html` (use `DASHBOARD_PORT=8090 ./start_all.sh` if 8081 is busy).
-- Use the dashboard’s **Camera Configuration** card to switch entry/exit cameras on the fly. (You can still set `ENTRY_CAM_ID`, `EXIT_CAM_ID`, or `SPLIT_MODE=1` before running the script if you prefer fixed defaults.)
+- Use the dashboard’s **Camera Configuration** card to switch Entry A / Entry B cameras on the fly. (You can still set `ENTRY_CAM_ID`, `EXIT_CAM_ID`, or `SPLIT_MODE=1` before running the script if you prefer fixed defaults.)
 - Stats API: `http://localhost:8000/stats`.
-- Entry-only dual-door mode: `./start_entry_only.sh` counts everyone coming in through two entry doors (no exits logged).
+- Entry-only dual-door mode (default): `./start_all.sh` (or `./start_entry_only.sh`) counts everyone coming in through two entry doors (no exits logged).
 - Stop everything with **Ctrl+C** in the `start_all.sh` window.
 - Reset from scratch: `./reset_system.sh` (backs up DB + thumbnails).
 - Clean up duplicate face IDs later with `python merge_duplicates.py --apply` (dry-run without `--apply`).
@@ -81,7 +81,7 @@ Need to count everyone entering through two separate doors without tracking exit
 - Prompts for the two entry sources (Door A / Door B) just like `start_all.sh`.
 - Both cameras log `in` crossings against the same database; `total_out` stays at 0 and `current_occupancy` = `total_in`.
 - The dashboard/API remain the same, so existing automations keep working.
-- Switch back to the regular entry/exit workflow anytime by running `./start_all.sh`.
+- This is also how `./start_all.sh` runs by default now (entry-only).
 
 ## Controls
 

@@ -47,12 +47,12 @@ if [ -t 0 ] && [ "${SKIP_CAMERA_PROMPT:-0}" != "1" ]; then
     echo -e "${YELLOW}Camera selection${NC}"
     echo "Enter a camera index (0,1,...) or paste an RTSP/USB URL. Press Enter to keep the default."
 
-    read -r -p "Entry camera source [${ENTRY_CAM_ID}]: " entry_input
+    read -r -p "Entry A camera source [${ENTRY_CAM_ID}]: " entry_input
     if [ -n "$entry_input" ]; then
         ENTRY_CAM_ID="$entry_input"
     fi
 
-    read -r -p "Exit camera source [${EXIT_CAM_ID}]: " exit_input
+    read -r -p "Entry B camera source [${EXIT_CAM_ID}]: " exit_input
     if [ -n "$exit_input" ]; then
         EXIT_CAM_ID="$exit_input"
     fi
@@ -71,7 +71,7 @@ if [ -t 0 ] && [ "${SKIP_CAMERA_PROMPT:-0}" != "1" ]; then
 
 else
     echo ""
-    echo -e "${YELLOW}Using existing camera configuration (ENTRY=${ENTRY_CAM_ID}, EXIT=${EXIT_CAM_ID}, SPLIT_MODE=${SPLIT_MODE})${NC}"
+    echo -e "${YELLOW}Using existing camera configuration (ENTRY_A=${ENTRY_CAM_ID}, ENTRY_B=${EXIT_CAM_ID}, SPLIT_MODE=${SPLIT_MODE})${NC}"
     use_body_cam=${USE_BODY_CAM:-n}
     SIDE_CAM_ID=${SIDE_CAM_ID:-2}
 fi
@@ -107,8 +107,8 @@ if [ "$split_mode" = true ]; then
     PORT=$API_PORT python3 main_dual_camera.py --entry-cam "$entry_cam" --exit-cam "$exit_cam" --split-screen &
     CAMERA_PID=$!
 else
-    echo -e "${GREEN}Entry Camera: $entry_cam${NC}"
-    echo -e "${GREEN}Exit  Camera: $exit_cam${NC}"
+    echo -e "${GREEN}Entry A Camera: $entry_cam${NC}"
+    echo -e "${GREEN}Entry B Camera: $exit_cam${NC}"
     if [ -n "$PEER_URL" ]; then
         echo -e "${GREEN}Peer URL: $PEER_URL${NC}"
     fi

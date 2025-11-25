@@ -126,7 +126,7 @@ class StatsResponse(BaseModel):
 class SyncFaceRequest(BaseModel):
     person_id: str
     name: str
-    embedding_blob: str  # Base64 encoded pickle or just hex? Let's use hex or bytes. Actually, pickle bytes -> hex is safest for JSON.
+    embedding: List[float]
 
 class PeopleCounter:
     def __init__(self):
@@ -331,13 +331,10 @@ class PeopleCounter:
             if embedding is None:
                 return
                 
-            # Serialize embedding
-            embedding_blob = pickle.dumps(embedding).hex()
-            
             payload = {
                 "person_id": person_id,
                 "name": name,
-                "embedding_blob": embedding_blob
+                "embedding": embedding.tolist()
             }
             
             async with httpx.AsyncClient() as client:
@@ -564,9 +561,19 @@ async def get_stats():
 async def sync_face(request: SyncFaceRequest):
     """Receive a new face from peer"""
     try:
-        # Decode embedding
-        embedding_blob = bytes.fromhex(request.embedding_blob)
-        embedding = pickle.loads(embedding_blob)
+        # Validate and normalize embedding
+        embedding_arr = np.asarray(request.embedding, dtype=np.float32)
+        if embedding_arr.ndim != 1:
+            raise HTTPException(status_code=400, detail="Embedding must be a 1D array")
+        if len(embedding_arr) < 128 or len(embedding_arr) > 2048:
+            raise HTTPException(status_code=400, detail="Embedding length out of expected range")
+        if not np.all(np.isfinite(embedding_arr)):
+            raise HTTPException(status_code=400, detail="Embedding contains non-finite values")
+        norm = float(np.linalg.norm(embedding_arr))
+        if not np.isfinite(norm) or norm < 1e-6:
+            raise HTTPException(status_code=400, detail="Invalid embedding norm")
+        embedding = embedding_arr / norm
+        embedding_blob = pickle.dumps(embedding)
         
         # Add to database
         conn = sqlite3.connect(DB_PATH)

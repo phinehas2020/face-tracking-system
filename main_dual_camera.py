@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Dual Camera Face Recognition People Counter
-============================================
+Dual Camera Face Recognition People Counter (Entry-Only)
+=========================================================
 
-This system uses two cameras:
-- Camera 1 (ENTRY): Detects faces entering
-- Camera 2 (EXIT): Detects faces leaving
+This system now uses two cameras as complementary entry viewpoints:
+- Camera 1 (ENTRY A): Detects faces entering
+- Camera 2 (ENTRY B): Detects faces entering from a second angle
 
-When a face is seen on the entry camera, the person is counted IN.
-When THE SAME face is seen on the exit camera, they are counted OUT.
+Every detection on either camera is treated as an entry; exits are not tracked.
 
 Usage:
 ------
@@ -128,7 +127,7 @@ class StatsResponse(BaseModel):
 class SyncFaceRequest(BaseModel):
     person_id: str
     name: str
-    embedding_blob: str
+    embedding: List[float]
 
 
 CameraSource = Union[int, str]
@@ -894,10 +893,9 @@ class DualCameraCounter:
         
         # Check cooldown
         current_time = time.time()
-        if person_id in self.person_last_seen:
-            last_entry = self.person_last_seen[person_id].get('entry', 0)
-            if current_time - last_entry < FACE_COOLDOWN_TIME:
-                return None  # Too soon, skip
+        last_entry = self.person_last_seen.get(person_id, {}).get('entry', 0)
+        if current_time - last_entry < FACE_COOLDOWN_TIME:
+            return None  # Too soon, skip
 
         # Record entry
         final_id = person_id
@@ -912,35 +910,28 @@ class DualCameraCounter:
                 if person_id in self.person_last_seen:
                     history = self.person_last_seen.pop(person_id)
                     self.person_last_seen.setdefault(final_id, {}).update(history)
-                if person_id in self.active_persons:
-                    self.active_persons.discard(person_id)
 
-        if final_id not in self.active_persons:
-            history = self.person_last_seen.setdefault(final_id, {})
-            history['entry'] = current_time
-            
-            if appearance_signature is not None:
-                self._remember_appearance(final_id, appearance_signature, current_time)
-
-            if not final_id.startswith('temp_'):
-                if final_id not in self.person_thumbnails and face_image is not None:
-                    thumbnail_path = self.save_thumbnail(final_id, face_image)
-                    self.update_person_thumbnail(final_id, thumbnail_path)
-                self.log_crossing(final_id, 'in', current_time)
-                self.maybe_refresh_embedding(final_id, embedding)
-            else:
-                self.log_crossing(final_id, 'in', current_time)
-
-            self.active_persons.add(final_id)
-
-            # Update stats
-            self.update_stats()
-
-            self._remember_recent_entry_candidate(final_id, embedding)
-            logger.info(f"ENTRY: {final_id} entered at {datetime.now().strftime('%H:%M:%S')}")
-            return final_id
+        history = self.person_last_seen.setdefault(final_id, {})
+        history['entry'] = current_time
         
-        return None
+        if appearance_signature is not None:
+            self._remember_appearance(final_id, appearance_signature, current_time)
+
+        if not final_id.startswith('temp_'):
+            if final_id not in self.person_thumbnails and face_image is not None:
+                thumbnail_path = self.save_thumbnail(final_id, face_image)
+                self.update_person_thumbnail(final_id, thumbnail_path)
+            self.log_crossing(final_id, 'in', current_time)
+            self.maybe_refresh_embedding(final_id, embedding)
+        else:
+            self.log_crossing(final_id, 'in', current_time)
+
+        # Update stats
+        self.update_stats()
+
+        self._remember_recent_entry_candidate(final_id, embedding)
+        logger.info(f"ENTRY: {final_id} entered at {datetime.now().strftime('%H:%M:%S')}")
+        return final_id
 
     def _record_exit(self, person_id: str, embedding=None, face_image=None,
                      appearance_signature=None, timestamp: Optional[float] = None,
@@ -991,25 +982,8 @@ class DualCameraCounter:
         return None
 
     def process_exit_detection(self, embedding, face_image=None, appearance_signature=None):
-        """Process a face detection from the exit camera"""
-        if embedding is None:
-            return None
-
-        # Try to match the face
-        person_id = self.match_face(embedding)
-        
-        if person_id is None:
-            # Unknown person exiting - shouldn't happen in ideal scenario
-            logger.warning("Unknown person detected at exit")
-            return None
-
-        return self._record_exit(
-            person_id,
-            embedding=embedding,
-            face_image=face_image,
-            appearance_signature=appearance_signature,
-            reason="face"
-        )
+        """Entry-only mode: treat the second camera as another entry viewpoint."""
+        return self.process_entry_detection(embedding, face_image, appearance_signature)
 
     def process_exit_by_appearance(self, appearance_signature: Optional[np.ndarray], timestamp: Optional[float] = None):
         """Fallback for side/back views: match clothing colors against active visitors."""
@@ -1090,27 +1064,26 @@ class DualCameraCounter:
 
         # Remove temp record if present
         self.temp_embeddings.pop(temp_id, None)
+        self.person_last_seen.pop(temp_id, None)
+        self.active_persons.discard(temp_id)
         
-        # Sync to peer if configured
+        # Merge with an existing person if similarity is high
+        merged_id = self.merge_if_duplicate(new_id)
+        if merged_id != new_id:
+            logger.info(f"Created permanent person: {merged_id} (merged from {temp_id} -> {new_id})")
+        else:
+            logger.info(f"Created permanent person: {new_id} (from {temp_id})")
+        self.last_embedding_update[merged_id] = time.time()
+
+        # Sync to peer if configured (after merge resolution)
         if PEER_URL:
-            Thread(target=self.sync_to_peer, args=(new_id, name, embedding), daemon=True).start()
+            Thread(
+                target=self.sync_to_peer,
+                args=(merged_id, self.person_names.get(merged_id, name), embedding),
+                daemon=True
+            ).start()
 
-        return new_id
-        self.last_embedding_update[temp_id] = time.time()
-
-        # Remove temp record if present
-        self.temp_embeddings.pop(temp_id, None)
-        
-        person_id = self.merge_if_duplicate(temp_id)
-        if person_id != temp_id:
-            logger.info(f"Created permanent person: {person_id} (merged from {temp_id})")
-
-        # Sync to peer if configured
-        # Sync to peer if configured
-        if PEER_URL:
-            Thread(target=self.sync_to_peer, args=(person_id, name, embedding), daemon=True).start()
-
-        return person_id
+        return merged_id
 
     def sync_to_peer(self, person_id, name, embedding):
         """Send new person to peer instance"""
@@ -1118,13 +1091,10 @@ class DualCameraCounter:
             if embedding is None:
                 return
                 
-            # Serialize embedding
-            embedding_blob = pickle.dumps(embedding).hex()
-            
             payload = {
                 "person_id": person_id,
                 "name": name,
-                "embedding_blob": embedding_blob
+                "embedding": embedding.tolist()
             }
             
             with httpx.Client() as client:
@@ -1257,8 +1227,8 @@ class DualCameraCounter:
                 datetime.fromtimestamp(last_body_ts).isoformat() if last_body_ts else None
             )
             
-            # Current occupancy
-            global_stats["current_occupancy"] = len(self.active_persons)
+            # Entry-only mode: occupancy equals total entries (no exits tracked)
+            global_stats["current_occupancy"] = global_stats["total_in"]
             
             # Average dwell time
             cursor.execute("""
@@ -1307,20 +1277,15 @@ class DualCameraCounter:
                 match_hint = None
 
                 if embedding is not None:
-                    # Process based on camera type
-                    if camera_type == 'entry':
-                        if not self._entry_should_suppress(center):
-                            person_id = self.process_entry_detection(embedding, face_image, appearance_sig)
-                            if person_id:
-                                self._remember_entry_position(center)
-                        else:
-                            logger.info("ENTRY suppression: ignoring repeated detection near doorway")
-                        color = (0, 255, 0) if person_id else (128, 128, 0)  # Green if entered, amber otherwise
-                        match_hint = "face" if person_id else None
-                    else:  # exit camera
-                        person_id = self.process_exit_detection(embedding, face_image, appearance_sig)
-                        color = (0, 0, 255) if person_id else (255, 0, 0)  # Red if exited, blue otherwise
-                        match_hint = "face" if person_id else None
+                    # Both cameras are entry viewpoints in this mode
+                    if not self._entry_should_suppress(center):
+                        person_id = self.process_entry_detection(embedding, face_image, appearance_sig)
+                        if person_id:
+                            self._remember_entry_position(center)
+                    else:
+                        logger.info("ENTRY suppression: ignoring repeated detection near doorway")
+                    color = (0, 255, 0) if person_id else (128, 128, 0)  # Green if entered, amber otherwise
+                    match_hint = "face" if person_id else None
                 else:
                     # Default when no face was extracted
                     color = (128, 128, 128)
@@ -1349,18 +1314,19 @@ class DualCameraCounter:
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
         # Add camera label
-        label = f"{camera_type.upper()} CAMERA"
+        if camera_type in ("entry", "entry_a"):
+            label = "ENTRY A CAMERA"
+        else:
+            label = "ENTRY B CAMERA"
         cv2.putText(frame, label, (10, 25),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         
-        # Display statistics on entry camera only
-        if camera_type == 'entry':
+        # Display statistics on primary entry camera only
+        if camera_type in ('entry', 'entry_a'):
             with stats_lock:
                 stats_text = [
                     f"Unique Visitors: {global_stats['unique_visitors']}",
-                    f"Total In: {global_stats['total_in']}",
-                    f"Total Out: {global_stats['total_out']}",
-                    f"Current Inside: {len(self.active_persons)}",
+                    f"Total Entries: {global_stats['total_in']}",
                     f"Avg Dwell: {global_stats['avg_dwell_minutes']:.1f} min"
                 ]
             
@@ -1399,7 +1365,7 @@ class DualCameraCounter:
                     cap_entry, cap_exit = self._reload_cameras(cap_entry, cap_exit)
                     continue
 
-                # Read from entry camera
+                # Read from entry camera A
                 ret_entry, frame_entry, age_entry = cap_entry.read()
                 if not ret_entry or frame_entry is None:
                     time.sleep(0.01)
@@ -1416,7 +1382,7 @@ class DualCameraCounter:
                         self._last_entry_latency_log = now
                 
                 if self.split_screen:
-                    # Split the single camera frame
+                    # Split the single camera frame into A/B
                     height, width = frame_entry.shape[:2]
                     frame_exit = frame_entry[:, width//2:]
                     frame_entry = frame_entry[:, :width//2]
@@ -1428,25 +1394,25 @@ class DualCameraCounter:
                     if self.exit_recorder:
                         self.exit_recorder.record_frame(frame_exit)
                 else:
-                    # Read from separate exit camera
+                    # Read from separate entry camera B
                     ret_exit, frame_exit, age_exit = cap_exit.read()
                     if not ret_exit or frame_exit is None:
                         time.sleep(0.01)
                         continue
                     
-                    # Record exit frame (raw)
+                    # Record entry B frame (raw)
                     if self.exit_recorder:
                         self.exit_recorder.record_frame(frame_exit)
 
                     if age_exit and age_exit > 1.5:
                         now = time.time()
                         if now - self._last_exit_latency_log > 1.0:
-                            logger.warning("Exit frame lag %.2fs", age_exit)
+                            logger.warning("Entry B frame lag %.2fs", age_exit)
                             self._last_exit_latency_log = now
                 
                 loop_start = time.time()
-                processed_entry = self.process_frame(frame_entry, 'entry', age_entry)
-                processed_exit = self.process_frame(frame_exit, 'exit', age_exit)
+                processed_entry = self.process_frame(frame_entry, 'entry_a', age_entry)
+                processed_exit = self.process_frame(frame_exit, 'entry_b', age_exit)
                 loop_time = time.time() - loop_start
                 if loop_time > 0.5:
                     logger.warning("Processing pipeline took %.2fs this cycle", loop_time)
@@ -1476,43 +1442,6 @@ class DualCameraCounter:
             if self.db_conn:
                 self.db_conn.close()
 
-# FastAPI endpoints
-@app.get("/cameras")
-async def get_cameras():
-    """Get available cameras and current configuration"""
-    if not COUNTER_INSTANCE:
-        raise HTTPException(status_code=503, detail="System initializing")
-    
-    # List available cameras (cached or probed)
-    # For now, we probe a few indices. In production, cache this.
-    available = COUNTER_INSTANCE.list_available_cameras()
-    
-    return {
-        "available": available,
-        "active": {
-            "entry_cam": COUNTER_INSTANCE.entry_cam_id,
-            "exit_cam": COUNTER_INSTANCE.exit_cam_id,
-            "split_screen": COUNTER_INSTANCE.split_screen
-        }
-    }
-
-@app.post("/cameras")
-async def config_cameras(config: CameraConfigRequest):
-    """Update camera configuration"""
-    if not COUNTER_INSTANCE:
-        raise HTTPException(status_code=503, detail="System initializing")
-        
-    success, message = COUNTER_INSTANCE.update_camera_config(
-        config.entry_cam, 
-        config.exit_cam, 
-        config.split_screen
-    )
-    
-    if not success:
-        raise HTTPException(status_code=400, detail=message)
-        
-    return {"status": "ok", "message": message}
-
 @app.get("/stats", response_model=StatsResponse)
 async def get_stats():
     """Get current statistics"""
@@ -1537,9 +1466,19 @@ async def get_stats():
 async def sync_face(request: SyncFaceRequest):
     """Receive a new face from peer"""
     try:
-        # Decode embedding
-        embedding_blob = bytes.fromhex(request.embedding_blob)
-        embedding = pickle.loads(embedding_blob)
+        # Validate and normalize embedding
+        embedding_arr = np.asarray(request.embedding, dtype=np.float32)
+        if embedding_arr.ndim != 1:
+            raise HTTPException(status_code=400, detail="Embedding must be 1D")
+        if len(embedding_arr) < 128 or len(embedding_arr) > 2048:
+            raise HTTPException(status_code=400, detail="Embedding length out of expected range")
+        if not np.all(np.isfinite(embedding_arr)):
+            raise HTTPException(status_code=400, detail="Embedding contains non-finite values")
+        norm = float(np.linalg.norm(embedding_arr))
+        if not np.isfinite(norm) or norm < 1e-6:
+            raise HTTPException(status_code=400, detail="Invalid embedding norm")
+        embedding = embedding_arr / norm
+        embedding_blob = pickle.dumps(embedding)
         
         # Add to database
         conn = sqlite3.connect(DB_PATH)
@@ -1596,15 +1535,16 @@ async def sync_face(request: SyncFaceRequest):
 @app.get("/cameras")
 async def get_cameras():
     """Return list of detected cameras and current configuration"""
-    if COUNTER_INSTANCE is None:
+    counter = COUNTER_INSTANCE or getattr(app.state, "counter", None)
+    if counter is None:
         raise HTTPException(status_code=503, detail="Camera system not initialized")
 
     return {
-        "available": COUNTER_INSTANCE.list_available_cameras(),
+        "available": counter.list_available_cameras(),
         "active": {
-            "entry_cam": str(COUNTER_INSTANCE.entry_cam_id),
-            "exit_cam": str(COUNTER_INSTANCE.exit_cam_id),
-            "split_screen": COUNTER_INSTANCE.split_screen
+            "entry_cam": str(counter.entry_cam_id),
+            "exit_cam": str(counter.exit_cam_id),
+            "split_screen": counter.split_screen
         }
     }
 
@@ -1612,10 +1552,11 @@ async def get_cameras():
 @app.post("/cameras/config")
 async def set_cameras(config: CameraConfigRequest):
     """Update camera assignment on the fly"""
-    if COUNTER_INSTANCE is None:
+    counter = COUNTER_INSTANCE or getattr(app.state, "counter", None)
+    if counter is None:
         raise HTTPException(status_code=503, detail="Camera system not initialized")
 
-    success, message = COUNTER_INSTANCE.update_camera_config(
+    success, message = counter.update_camera_config(
         config.entry_cam,
         config.exit_cam,
         config.split_screen
@@ -1682,6 +1623,7 @@ def signal_handler(sig, frame):
 
 def main():
     """Main entry point"""
+    global COUNTER_INSTANCE
     parser = argparse.ArgumentParser(description='Dual Camera Face Recognition People Counter')
     parser.add_argument('--entry-cam', type=str, default="0",
                        help='Entry camera source (index like 0 or RTSP URL)')
