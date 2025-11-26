@@ -477,6 +477,10 @@ class DualCameraCounter:
 
                 logger.info(f"PEER SYNC: Imported {imported} faces from peer, skipped {skipped} existing")
 
+                # Update stats to reflect new known_faces count
+                if imported > 0:
+                    self.update_stats()
+
         except Exception as e:
             logger.warning(f"PEER SYNC: Could not sync from peer: {e}")
 
