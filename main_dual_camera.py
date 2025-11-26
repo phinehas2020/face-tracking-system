@@ -1693,8 +1693,82 @@ async def root():
         "info": "System uses two cameras - entry and exit - to track people by face recognition"
     }
 
+async def sync_faces_from_peer(client: httpx.AsyncClient):
+    """Pull any missing faces from the peer"""
+    counter = COUNTER_INSTANCE or getattr(app.state, "counter", None)
+    if not counter:
+        return 0
+
+    try:
+        response = await client.get(f"{PEER_URL}/sync/faces/all", timeout=5.0)
+        if response.status_code != 200:
+            return 0
+
+        data = response.json()
+        faces = data.get("faces", [])
+        imported = 0
+
+        for face in faces:
+            person_id = face.get("person_id")
+            name = face.get("name")
+            embedding_list = face.get("embedding")
+
+            if not person_id or not embedding_list:
+                continue
+
+            # Skip if we already have this person
+            if person_id in counter.known_embeddings:
+                continue
+
+            # Add to database and memory
+            embedding = np.array(embedding_list, dtype=np.float32)
+            embedding = embedding / np.linalg.norm(embedding)
+
+            cursor = counter.db_conn.cursor()
+
+            # Check if person exists in DB
+            cursor.execute("SELECT 1 FROM persons WHERE person_id = ?", (person_id,))
+            if not cursor.fetchone():
+                cursor.execute("""
+                    INSERT INTO persons (person_id, name, consent_ts)
+                    VALUES (?, ?, ?)
+                """, (person_id, name, datetime.now().isoformat()))
+
+                cursor.execute("""
+                    INSERT INTO faces (person_id, embedding, created_ts)
+                    VALUES (?, ?, ?)
+                """, (person_id, pickle.dumps(embedding), datetime.now().isoformat()))
+
+                counter.db_conn.commit()
+
+            # Add to memory
+            counter.known_embeddings[person_id].append(embedding)
+            counter.person_names[person_id] = name
+
+            # Update visitor index if needed
+            if name and name.startswith("Visitor "):
+                try:
+                    idx = int(name.split(" ")[1])
+                    if idx >= counter.next_visitor_idx:
+                        counter.next_visitor_idx = idx + 1
+                except ValueError:
+                    pass
+
+            imported += 1
+
+        if imported > 0:
+            logger.info(f"PEER SYNC: Imported {imported} new faces from peer")
+            counter.update_stats()
+
+        return imported
+
+    except Exception as e:
+        logger.debug(f"PEER SYNC: Error during continuous sync: {e}")
+        return 0
+
+
 async def monitor_peer_connection():
-    """Background task to check peer connection status"""
+    """Background task to check peer connection and sync faces"""
     while True:
         if not PEER_URL:
             with stats_lock:
@@ -1702,24 +1776,33 @@ async def monitor_peer_connection():
             await asyncio.sleep(60)
             continue
 
+        status = "error"
+        data = None
+
         try:
             async with httpx.AsyncClient() as client:
+                # Get peer stats
                 response = await client.get(f"{PEER_URL}/stats", timeout=2.0)
                 if response.status_code == 200:
                     status = "connected"
                     data = response.json()
-                else:
-                    status = "error"
-                    data = None
-        except Exception:
-            status = "error"
-            data = None
-        
+
+                    # Sync faces if peer has more visitors than we know about
+                    peer_visitors = data.get("unique_visitors", 0)
+                    counter = COUNTER_INSTANCE or getattr(app.state, "counter", None)
+                    local_known = len(counter.known_embeddings) if counter else 0
+
+                    # Always try to sync - peer might have faces we don't
+                    await sync_faces_from_peer(client)
+
+        except Exception as e:
+            logger.debug(f"Peer connection error: {e}")
+
         with stats_lock:
             global_stats["peer_status"] = status
             global_stats["peer_data"] = data
-            
-        await asyncio.sleep(5)  # Check more frequently for live updates
+
+        await asyncio.sleep(5)  # Sync every 5 seconds
 
 def run_api(port=8000):
     """Run FastAPI server in a separate thread"""
