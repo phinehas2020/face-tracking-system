@@ -497,10 +497,17 @@
         </div>
 
         <div class="metric-card">
-            <div class="metric-icon">👤</div>
+            <div class="metric-icon">🅰️</div>
             <div class="metric-value" id="unique-visitors">0</div>
-            <div class="metric-label">This Station</div>
+            <div class="metric-label">Station A (This)</div>
             <div class="metric-change" id="unique-change"></div>
+        </div>
+
+        <div class="metric-card">
+            <div class="metric-icon">🅱️</div>
+            <div class="metric-value" id="peer-visitors">0</div>
+            <div class="metric-label">Station B (Peer)</div>
+            <div class="metric-change" id="peer-change"></div>
         </div>
 
         <div class="metric-card">
@@ -508,17 +515,6 @@
             <div class="metric-value" id="flow-rate">0</div>
             <div class="metric-label">Per Hour</div>
             <div class="metric-change" id="flow-change"></div>
-        </div>
-
-        <div class="metric-card" id="side-card">
-            <div class="metric-icon">📷</div>
-            <div class="metric-value" id="body-net">0</div>
-            <div class="metric-label">Side Camera</div>
-            <div class="metric-change" id="drift-change">Idle</div>
-            <div class="metric-subgrid">
-                <div>In: <strong id="body-in">0</strong></div>
-                <div>Out: <strong id="body-out">0</strong></div>
-            </div>
         </div>
     </div>
 
@@ -644,6 +640,10 @@
 
                     updateMetric('grand-total-visitors', grandTotalVisitors, 'grand-change');
                     updateMetric('unique-visitors', data.unique_visitors, 'unique-change');
+
+                    // Peer station stats
+                    const peerVisitors = data.peer_data?.unique_visitors ?? 0;
+                    updateMetric('peer-visitors', peerVisitors, 'peer-change');
 
                     // Flow rate
                     const hoursElapsed = (Date.now() - startTime) / (1000 * 60 * 60);
