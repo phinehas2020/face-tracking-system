@@ -1526,6 +1526,7 @@ async def get_stats():
     with stats_lock:
         return StatsResponse(
             unique_visitors=global_stats["unique_visitors"],
+            known_faces=global_stats.get("known_faces", 0),
             avg_dwell_minutes=global_stats["avg_dwell_minutes"],
             total_in=global_stats["total_in"],
             total_out=global_stats["total_out"],
