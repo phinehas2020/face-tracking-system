@@ -1,0 +1,10 @@
+{
+  "applications": [
+    {
+      "packageName": "com.android.chrome",
+      "installType": "FORCE_INSTALLED",
+      "defaultPermissionPolicy": "GRANT"
+    }
+  ],
+  "debuggingFeaturesAllowed": true
+}
