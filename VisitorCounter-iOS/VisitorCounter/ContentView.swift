@@ -245,11 +245,12 @@ struct SettingsView: View {
         NavigationView {
             Form {
                 Section(header: Text("Server Configuration")) {
-                    TextField("Server IP Address", text: $viewModel.serverIP)
-                        .keyboardType(.decimalPad)
+                    TextField("Server Address", text: $viewModel.serverAddress)
+                        .keyboardType(.URL)
                         .autocapitalization(.none)
+                        .autocorrectionDisabled()
 
-                    Text("Enter the IP address of your Mac running the face tracking system. The port 8000 will be used automatically.")
+                    Text("Enter one of:\n• IP address: 192.168.1.100\n• Cloudflare URL: https://xyz.trycloudflare.com")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -270,6 +271,12 @@ struct SettingsView: View {
                     Button("Test Connection") {
                         viewModel.fetchStats()
                     }
+                }
+
+                Section(header: Text("Quick Setup")) {
+                    Text("1. Run ./start_all.sh on your Mac\n2. Run ./start_tunnel.sh for remote access\n3. Copy the tunnel URL here")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             }
             .navigationTitle("Settings")

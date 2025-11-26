@@ -5,9 +5,20 @@ class StatsViewModel: ObservableObject {
     @Published var stats: StatsResponse?
     @Published var isConnected = false
     @Published var errorMessage: String?
-    @Published var serverIP: String = "192.168.1.100"  // Change to your server IP
+    @Published var serverAddress: String = "" {
+        didSet {
+            UserDefaults.standard.set(serverAddress, forKey: "serverAddress")
+        }
+    }
 
     private var timer: Timer?
+
+    init() {
+        // Load saved address
+        if let saved = UserDefaults.standard.string(forKey: "serverAddress"), !saved.isEmpty {
+            serverAddress = saved
+        }
+    }
 
     var grandTotal: Int {
         let local = stats?.uniqueVisitors ?? 0
@@ -16,9 +27,37 @@ class StatsViewModel: ObservableObject {
     }
 
     var flowRate: Int {
-        // Simple approximation - entries per hour since app started
         guard let stats = stats else { return 0 }
         return stats.totalIn
+    }
+
+    /// Build the stats URL from user input
+    /// Accepts: IP address (192.168.1.100), IP:port (192.168.1.100:8000),
+    /// or full URL (https://xyz.trycloudflare.com)
+    private func buildStatsURL() -> URL? {
+        var input = serverAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if input.isEmpty {
+            return nil
+        }
+
+        // If it's already a full URL
+        if input.hasPrefix("http://") || input.hasPrefix("https://") {
+            // Remove trailing slash if present
+            if input.hasSuffix("/") {
+                input = String(input.dropLast())
+            }
+            return URL(string: "\(input)/stats")
+        }
+
+        // If it's just an IP or hostname
+        // Check if port is included
+        if input.contains(":") {
+            return URL(string: "http://\(input)/stats")
+        } else {
+            // Default to port 8000
+            return URL(string: "http://\(input):8000/stats")
+        }
     }
 
     func startPolling() {
@@ -34,8 +73,9 @@ class StatsViewModel: ObservableObject {
     }
 
     func fetchStats() {
-        guard let url = URL(string: "http://\(serverIP):8000/stats") else {
-            errorMessage = "Invalid URL"
+        guard let url = buildStatsURL() else {
+            errorMessage = "Enter a server address"
+            isConnected = false
             return
         }
 
