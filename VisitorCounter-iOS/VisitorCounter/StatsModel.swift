@@ -2,6 +2,7 @@ import Foundation
 
 struct StatsResponse: Codable {
     let uniqueVisitors: Int
+    let knownFaces: Int  // Total known faces synced across all stations
     let avgDwellMinutes: Double
     let totalIn: Int
     let totalOut: Int
@@ -17,6 +18,7 @@ struct StatsResponse: Codable {
 
     enum CodingKeys: String, CodingKey {
         case uniqueVisitors = "unique_visitors"
+        case knownFaces = "known_faces"
         case avgDwellMinutes = "avg_dwell_minutes"
         case totalIn = "total_in"
         case totalOut = "total_out"

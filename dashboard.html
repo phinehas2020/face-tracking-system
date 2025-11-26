@@ -639,11 +639,8 @@
                         stationStatus.style.display = 'none';
                     }
 
-                    // Calculate grand totals
-                    let grandTotalVisitors = data.unique_visitors;
-                    if (data.peer_data) {
-                        grandTotalVisitors += (data.peer_data.unique_visitors || 0);
-                    }
+                    // Grand total = all known faces (synced across all stations)
+                    const grandTotalVisitors = data.known_faces || data.unique_visitors;
 
                     updateMetric('grand-total-visitors', grandTotalVisitors, 'grand-change');
                     updateMetric('unique-visitors', data.unique_visitors, 'unique-change');

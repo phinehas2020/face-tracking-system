@@ -92,6 +92,7 @@ app.add_middleware(
 stats_lock = Lock()
 global_stats = {
     "unique_visitors": 0,
+    "known_faces": 0,
     "total_in": 0,
     "total_out": 0,
     "avg_dwell_minutes": 0.0,
@@ -99,7 +100,6 @@ global_stats = {
     "body_in": 0,
     "body_out": 0,
     "body_net": 0,
-    "count_drift": 0,
     "count_drift": 0,
     "last_body_event": None,
     "peer_status": "disabled",
@@ -111,6 +111,7 @@ COUNTER_INSTANCE = None
 
 class StatsResponse(BaseModel):
     unique_visitors: int
+    known_faces: int  # Total known faces synced across all stations
     avg_dwell_minutes: float
     total_in: int
     total_out: int
@@ -1265,16 +1266,19 @@ class DualCameraCounter:
     def update_stats(self):
         """Update global statistics"""
         cursor = self.db_conn.cursor()
-        
+
         with stats_lock:
-            # Unique visitors
+            # Total known faces (synced across all stations)
+            global_stats["known_faces"] = len(self.known_embeddings)
+
+            # Unique visitors who entered at THIS station
             cursor.execute("SELECT COUNT(DISTINCT person_id) FROM crossings")
             global_stats["unique_visitors"] = cursor.fetchone()[0] or 0
-            
-            # Total in/out
+
+            # Total in/out at this station
             cursor.execute("SELECT COUNT(*) FROM crossings WHERE direction = 'in'")
             global_stats["total_in"] = cursor.fetchone()[0] or 0
-            
+
             cursor.execute("SELECT COUNT(*) FROM crossings WHERE direction = 'out'")
             global_stats["total_out"] = cursor.fetchone()[0] or 0
 

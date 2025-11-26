@@ -21,9 +21,8 @@ class StatsViewModel: ObservableObject {
     }
 
     var grandTotal: Int {
-        let local = stats?.uniqueVisitors ?? 0
-        let peer = stats?.peerData?.uniqueVisitors ?? 0
-        return local + peer
+        // Use known_faces which is synced across all stations
+        return stats?.knownFaces ?? stats?.uniqueVisitors ?? 0
     }
 
     var flowRate: Int {
