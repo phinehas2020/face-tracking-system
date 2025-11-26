@@ -249,7 +249,8 @@ class DualCameraCounter:
         self._init_face_analyzer()
         self._init_database()
         self._load_known_faces()
-    
+        self.sync_from_peer()  # Pull existing faces from peer station
+
     def _init_yolo(self):
         """Initialize YOLO model for detection"""
         try:
@@ -402,8 +403,81 @@ class DualCameraCounter:
                     pass
                     
             logger.debug(f"Loaded embedding for {name} (ID: {person_id})")
-        
+
         logger.info(f"Loaded embeddings for {len(self.known_embeddings)} known people. Next Visitor ID: {self.next_visitor_idx}")
+
+    def sync_from_peer(self):
+        """Pull all existing faces from peer station on startup"""
+        if not PEER_URL:
+            return
+
+        logger.info(f"PEER SYNC: Attempting to pull faces from {PEER_URL}")
+
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.get(f"{PEER_URL}/sync/faces/all")
+                if response.status_code != 200:
+                    logger.warning(f"PEER SYNC: Failed to get faces from peer: {response.status_code}")
+                    return
+
+                data = response.json()
+                faces = data.get("faces", [])
+                imported = 0
+                skipped = 0
+
+                for face in faces:
+                    person_id = face.get("person_id")
+                    name = face.get("name")
+                    embedding_list = face.get("embedding")
+
+                    if not person_id or not embedding_list:
+                        continue
+
+                    # Skip if we already have this person
+                    if person_id in self.known_embeddings:
+                        skipped += 1
+                        continue
+
+                    # Add to database and memory
+                    embedding = np.array(embedding_list, dtype=np.float32)
+                    embedding = embedding / np.linalg.norm(embedding)
+
+                    cursor = self.db_conn.cursor()
+
+                    # Check if person exists in DB
+                    cursor.execute("SELECT 1 FROM persons WHERE person_id = ?", (person_id,))
+                    if not cursor.fetchone():
+                        cursor.execute("""
+                            INSERT INTO persons (person_id, name, consent_ts)
+                            VALUES (?, ?, ?)
+                        """, (person_id, name, datetime.now().isoformat()))
+
+                        cursor.execute("""
+                            INSERT INTO faces (person_id, embedding, created_ts)
+                            VALUES (?, ?, ?)
+                        """, (person_id, pickle.dumps(embedding), datetime.now().isoformat()))
+
+                        self.db_conn.commit()
+
+                    # Add to memory
+                    self.known_embeddings[person_id].append(embedding)
+                    self.person_names[person_id] = name
+
+                    # Update visitor index if needed
+                    if name and name.startswith("Visitor "):
+                        try:
+                            idx = int(name.split(" ")[1])
+                            if idx >= self.next_visitor_idx:
+                                self.next_visitor_idx = idx + 1
+                        except ValueError:
+                            pass
+
+                    imported += 1
+
+                logger.info(f"PEER SYNC: Imported {imported} faces from peer, skipped {skipped} existing")
+
+        except Exception as e:
+            logger.warning(f"PEER SYNC: Could not sync from peer: {e}")
 
     def list_available_cameras(self, max_devices: int = 6) -> List[Dict[str, int]]:
         """Probe a handful of device indices to see which cameras respond"""
@@ -1526,11 +1600,51 @@ async def sync_face(request: SyncFaceRequest):
                  logger.info(f"PEER SYNC MERGE: {request.person_id} merged into {merged_id}")
         
         return {"status": "synced"}
-        
+
     except Exception as e:
         logger.error(f"Error processing sync request: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+
+@app.get("/sync/faces/all")
+async def get_all_faces():
+    """Return all known faces for initial sync with peer"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT p.person_id, p.name, f.embedding
+            FROM persons p
+            JOIN faces f ON p.person_id = f.person_id
+            ORDER BY f.created_ts DESC
+        """)
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        faces = []
+        seen_ids = set()
+        for person_id, name, embedding_blob in rows:
+            # Only send one embedding per person (most recent)
+            if person_id in seen_ids:
+                continue
+            seen_ids.add(person_id)
+
+            embedding = pickle.loads(embedding_blob)
+            faces.append({
+                "person_id": person_id,
+                "name": name,
+                "embedding": embedding.tolist()
+            })
+
+        logger.info(f"PEER SYNC: Sending {len(faces)} faces to peer")
+        return {"faces": faces, "count": len(faces)}
+
+    except Exception as e:
+        logger.error(f"Error getting all faces: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/cameras")
 async def get_cameras():
