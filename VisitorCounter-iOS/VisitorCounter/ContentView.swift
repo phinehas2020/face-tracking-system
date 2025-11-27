@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = StatsViewModel()
     @State private var showSettings = false
+    @State private var showAlerts = false
 
     var body: some View {
         NavigationView {
@@ -27,6 +28,25 @@ struct ContentView: View {
                                 .foregroundColor(.white.opacity(0.7))
 
                             Spacer()
+
+                            // Alerts button with badge
+                            Button(action: { showAlerts = true }) {
+                                ZStack(alignment: .topTrailing) {
+                                    Image(systemName: "bell.fill")
+                                        .foregroundColor(viewModel.unreadAlertCount > 0 ? .red : .white.opacity(0.7))
+
+                                    if viewModel.unreadAlertCount > 0 {
+                                        Text("\(viewModel.unreadAlertCount)")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .padding(4)
+                                            .background(Color.red)
+                                            .clipShape(Circle())
+                                            .offset(x: 8, y: -8)
+                                    }
+                                }
+                            }
+                            .padding(.trailing, 12)
 
                             Button(action: { showSettings = true }) {
                                 Image(systemName: "gear")
@@ -134,6 +154,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showAlerts) {
+            AlertsView(viewModel: viewModel)
         }
         .onAppear {
             viewModel.startPolling()

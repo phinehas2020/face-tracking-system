@@ -77,8 +77,10 @@ from config import (
     APPEARANCE_MIN_AREA
 )
 from video_recorder import ThreadedVideoRecorder
+from watchlist import WatchlistManager
 
 PEER_URL = os.getenv("PEER_URL")  # URL of the peer instance
+WATCHLIST_DIR = BASE_DIR / "watchlist"
 
 # Global variables
 app = FastAPI(title="Dual Camera People Counter API", version="2.0.0")
@@ -250,6 +252,7 @@ class DualCameraCounter:
         self._init_face_analyzer()
         self._init_database()
         self._load_known_faces()
+        self._init_watchlist()
         self.sync_from_peer()  # Pull existing faces from peer station
 
     def _init_yolo(self):
@@ -273,7 +276,16 @@ class DualCameraCounter:
         except Exception as e:
             logger.error(f"Failed to initialize face analyzer: {e}")
             raise
-    
+
+    def _init_watchlist(self):
+        """Initialize watchlist manager for flagged persons"""
+        try:
+            self.watchlist = WatchlistManager(WATCHLIST_DIR, DB_PATH, self.face_app)
+            logger.info(f"Watchlist initialized with {len(self.watchlist.get_watchlist_names())} people")
+        except Exception as e:
+            logger.error(f"Failed to initialize watchlist: {e}")
+            self.watchlist = None
+
     def _init_database(self):
         """Initialize database connection"""
         self.db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -979,6 +991,13 @@ class DualCameraCounter:
         """Process a face detection from the entry camera"""
         if embedding is None:
             return None
+
+        # Check watchlist for flagged persons
+        if self.watchlist:
+            watchlist_match = self.watchlist.check_face(embedding)
+            if watchlist_match:
+                name, similarity = watchlist_match
+                self.watchlist.record_alert(name, similarity)
 
         # Try to match the face
         person_id = self.match_face(embedding)
@@ -1713,6 +1732,60 @@ async def set_cameras(config: CameraConfigRequest):
         raise HTTPException(status_code=400, detail=message)
 
     return {"status": "ok", "message": message}
+
+
+@app.get("/alerts")
+async def get_alerts(since: int = 3600, unacknowledged: bool = True):
+    """Get recent watchlist alerts"""
+    counter = COUNTER_INSTANCE or getattr(app.state, "counter", None)
+    if counter is None or counter.watchlist is None:
+        return {"alerts": [], "count": 0, "watchlist_enabled": False}
+
+    alerts = counter.watchlist.get_recent_alerts(since, unacknowledged)
+    return {
+        "alerts": alerts,
+        "count": len(alerts),
+        "watchlist_enabled": True,
+        "watchlist_names": counter.watchlist.get_watchlist_names()
+    }
+
+
+@app.post("/alerts/{alert_id}/acknowledge")
+async def acknowledge_alert(alert_id: int):
+    """Acknowledge a specific alert"""
+    counter = COUNTER_INSTANCE or getattr(app.state, "counter", None)
+    if counter is None or counter.watchlist is None:
+        raise HTTPException(status_code=503, detail="Watchlist not initialized")
+
+    success = counter.watchlist.acknowledge_alert(alert_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    return {"status": "acknowledged", "alert_id": alert_id}
+
+
+@app.post("/alerts/acknowledge-all")
+async def acknowledge_all_alerts():
+    """Acknowledge all pending alerts"""
+    counter = COUNTER_INSTANCE or getattr(app.state, "counter", None)
+    if counter is None or counter.watchlist is None:
+        raise HTTPException(status_code=503, detail="Watchlist not initialized")
+
+    count = counter.watchlist.acknowledge_all()
+    return {"status": "acknowledged", "count": count}
+
+
+@app.post("/watchlist/reload")
+async def reload_watchlist():
+    """Reload watchlist from folder (after adding new photos)"""
+    counter = COUNTER_INSTANCE or getattr(app.state, "counter", None)
+    if counter is None or counter.watchlist is None:
+        raise HTTPException(status_code=503, detail="Watchlist not initialized")
+
+    counter.watchlist.reload_watchlist()
+    names = counter.watchlist.get_watchlist_names()
+    return {"status": "reloaded", "count": len(names), "names": names}
+
 
 @app.get("/")
 async def root():
