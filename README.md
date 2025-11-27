@@ -1,188 +1,296 @@
 # Face Recognition People Counter
 
-A real-time people counting system with facial recognition, dwell-time tracking, and analytics dashboard.
+A real-time people counting system with facial recognition, multi-station sync, watchlist alerts, and iOS companion app.
 
 ## Features
 
-- 🎥 **Real-time Video Processing**: Uses YOLO v8 with ByteTrack for robust people detection and tracking
+- 🎥 **Real-time Video Processing**: Uses YOLO v8 for robust people detection
 - 👤 **Face Recognition**: InsightFace (ArcFace) for accurate face embedding and 1:N matching
-- 🚪 **Entry Counting Only**: Two entry viewpoints (A/B) to maximize face capture; exits are not tracked
-- 📊 **Analytics Dashboard**: FastAPI endpoint providing real-time statistics
+- 🚪 **Dual Entry Cameras**: Two entry viewpoints (A/B) to maximize face capture
+- 🔄 **Multi-Station Sync**: Peer-to-peer sync between stations via Tailscale
+- ⚠️ **Watchlist Alerts**: Flag specific people and get notified when detected
+- 📱 **iOS Companion App**: Real-time stats and push notifications on your iPhone
+- 🌐 **Remote Access**: Cloudflare tunnel for access from anywhere
+- 📹 **Auto Video Compression**: 30-minute segments with H.264 compression
+- 📊 **Analytics Dashboard**: Real-time web dashboard with station stats
 - 💾 **Persistent Storage**: SQLite database for tracking visitors and events
-- 🖼️ **Face Thumbnails**: Automatically saves a 200x200 snapshot per person for auditing
-- 🍎 **Apple Silicon Optimized**: Leverages MPS acceleration on M1/M2/M3 Macs
+- 🍎 **Apple Silicon Optimized**: Leverages CoreML acceleration on M1/M2/M3 Macs
 
 ## System Requirements
 
 - macOS with Apple Silicon (M1/M2/M3)
 - Python 3.10 or 3.11 (Recommended: 3.11)
-  - *Note: Python 3.12+ and 3.14 are currently not supported by some ML dependencies.*
-- Webcam or video file for input
+- Webcam or RTSP camera for input
 - At least 4GB of available RAM
+- ffmpeg (for video compression): `brew install ffmpeg`
 
 ## Quick Start
 
 ```bash
+# Clone and setup
 cd /Users/phinehasadams/face-tracking-system
 python3.11 -m venv venv && source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
-python database_init.py     # optional: populate /Users/phinehasadams/Desktop/faces first
+python database_init.py
 
-# Launch dual-camera pipeline + FastAPI + dashboard
+# Launch the system
 ./start_all.sh
 ```
 
-- Dashboard: `http://localhost:8081/dashboard.html` (use `DASHBOARD_PORT=8090 ./start_all.sh` if 8081 is busy).
-- Use the dashboard’s **Camera Configuration** card to switch Entry A / Entry B cameras on the fly. (You can still set `ENTRY_CAM_ID`, `EXIT_CAM_ID`, or `SPLIT_MODE=1` before running the script if you prefer fixed defaults.)
-- Stats API: `http://localhost:8000/stats`.
-- Entry-only dual-door mode (default): `./start_all.sh` (or `./start_entry_only.sh`) counts everyone coming in through two entry doors (no exits logged).
-- Stop everything with **Ctrl+C** in the `start_all.sh` window.
-- Reset from scratch: `./reset_system.sh` (backs up DB + thumbnails).
-- Clean up duplicate face IDs later with `python merge_duplicates.py --apply` (dry-run without `--apply`).
-- On launch you’ll be prompted for the ENTRY/EXIT camera sources (index or RTSP URL); press Enter to keep the defaults or set `SKIP_CAMERA_PROMPT=1 ./start_all.sh` to skip the questions for automation.
-- RTSP feeds default to low-latency FFmpeg options (`rtsp_transport=tcp`, `max_delay=50ms`, smaller buffers). Override by exporting `OPENCV_FFMPEG_CAPTURE_OPTIONS` before running the script if you need different tuning.
+- **Dashboard**: http://localhost:8081/dashboard.html
+- **Stats API**: http://localhost:8000/stats
+- **Stop**: Press Ctrl+C in the terminal
 
-➡️  The full operational handbook lives in [`USER_GUIDE.md`](USER_GUIDE.md).
+## Multi-Station Setup (Tailscale)
 
-Example response:
-```json
-{
-  "unique_visitors": 5,
-  "avg_dwell_minutes": 3.5,
-  "total_in": 12,
-  "total_out": 7,
-  "current_occupancy": 5,
-  "timestamp": "2025-11-06T10:30:45.123456"
-}
-```
+Sync visitors across multiple counting stations:
 
-### Using an RTSP / IP camera
+1. Install Tailscale on both Macs and join the same network
+2. On Station B, set the peer URL:
+   ```bash
+   PEER_URL=http://100.x.x.x:8000 ./start_all.sh
+   ```
+3. On Station A, set the reverse:
+   ```bash
+   PEER_URL=http://100.y.y.y:8000 ./start_all.sh
+   ```
 
-You can point either camera slot at a network stream instead of a local webcam. Set the corresponding environment variable before launching:
+Stations sync every 5 seconds. The dashboard shows:
+- **Total Visitors**: Combined unique faces across all stations
+- **Station A (This)**: Local station count
+- **Station B (Peer)**: Remote station count
+
+## Watchlist Alerts
+
+Get notified when specific people are detected:
+
+1. **Add photos** to the `watchlist/` folder:
+   ```
+   watchlist/
+   ├── John_Smith.jpg
+   ├── Jane_Doe.png
+   └── VIP_Guest.jpg
+   ```
+   Use underscores for spaces in names.
+
+2. **Restart the server** or reload via API:
+   ```bash
+   curl -X POST http://localhost:8000/watchlist/reload
+   ```
+
+3. **Receive alerts** on the iOS app when detected
+
+### Watchlist API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/alerts` | GET | Get recent watchlist alerts |
+| `/alerts/{id}/acknowledge` | POST | Acknowledge one alert |
+| `/alerts/acknowledge-all` | POST | Clear all alerts |
+| `/watchlist/reload` | POST | Reload photos from folder |
+
+## iOS Companion App
+
+The `VisitorCounter-iOS/` folder contains a SwiftUI app that shows:
+- Total visitor count (synced across stations)
+- Station A and Station B counts
+- Side camera count
+- Watchlist alerts with push notifications
+
+### Setup
+
+1. Open `VisitorCounter-iOS/VisitorCounter.xcodeproj` in Xcode
+2. Build and run on your iPhone
+3. Enter your server address (IP or Cloudflare tunnel URL)
+4. Grant notification permissions when prompted
+
+## Remote Access (Cloudflare Tunnel)
+
+Access your dashboard from anywhere without port forwarding:
 
 ```bash
-ENTRY_CAM_ID="rtsp://username:password@192.168.1.157:554/s0" \
-EXIT_CAM_ID=1 \
-./start_all.sh
+# Start the tunnel (requires cloudflared: brew install cloudflare/cloudflare/cloudflared)
+./start_tunnel.sh
 ```
 
-Any value that is not a plain integer is treated as a URL and opened with OpenCV/FFmpeg. The dashboard now shows a **Custom: ...** option when a stream URL is active so you can still reconfigure cameras later.
-Replace `username:password` with your camera’s actual credentials (or omit them if the feed is anonymous).
+Copy the generated `https://xxx.trycloudflare.com` URL into the iOS app settings.
 
-### Entry-only dual-door mode
+## Video Recording
 
-Need to count everyone entering through two separate doors without tracking exits? Launch the entry-only pipeline:
+Videos are automatically recorded in 30-minute segments and compressed:
 
-```bash
-./start_entry_only.sh
-```
+- **Raw recording**: Saved to `recordings/YYYY-MM-DD/camera_HH-MM-SS.mp4`
+- **Auto compression**: Background H.264 compression (typically 70-90% size reduction)
+- **Configuration** in `config.py`:
+  ```python
+  RECORDING_SEGMENT_DURATION = 1800  # 30 minutes
+  RECORDING_COMPRESS_CRF = 28        # Quality (18=high, 28=balanced, 35=small)
+  RECORDING_COMPRESS_PRESET = "fast" # Speed vs size tradeoff
+  ```
 
-- Prompts for the two entry sources (Door A / Door B) just like `start_all.sh`.
-- Both cameras log `in` crossings against the same database; `total_out` stays at 0 and `current_occupancy` = `total_in`.
-- The dashboard/API remain the same, so existing automations keep working.
-- This is also how `./start_all.sh` runs by default now (entry-only).
-
-## Controls
-
-- **Q**: Quit the application
-- **S**: Save a snapshot of the current frame
+Requires ffmpeg: `brew install ffmpeg`
 
 ## Configuration
 
-Tune runtime behavior in [`config.py`](config.py):
+All settings are in [`config.py`](config.py):
 
-- **Face matching:** `FACE_MATCH_THRESHOLD` sets the primary similarity bar; `FALLBACK_MATCH_THRESHOLD` and `PERSON_MERGE_THRESHOLD` control how aggressively IDs are reused or merged.
-- **Detection quality:** `MIN_FACE_SIZE`, `MAX_FACE_YAW_DEG`, and `MAX_FACE_PITCH_DEG` filter out small or poorly oriented faces.
-- **Cooldowns & timing:** `FACE_COOLDOWN_TIME`, `RECENT_PERSON_WINDOW`, and `EMBEDDING_REFRESH_INTERVAL` govern how quickly the same person can be counted again and how often embeddings are refreshed.
-- **Recording options:** Toggle `ENABLE_RECORDING`, and adjust `RECORDING_SEGMENT_DURATION` or `RECORDING_FRAME_RATE` to balance storage with fidelity.
+### Face Matching
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `FACE_MATCH_THRESHOLD` | 0.30 | Primary similarity threshold |
+| `FALLBACK_MATCH_THRESHOLD` | 0.22 | Threshold for recently seen persons |
+| `PERSON_MERGE_THRESHOLD` | 0.45 | Threshold to merge duplicate IDs |
 
-No manual constant edits in `main.py` are required—use `config.py` to adjust thresholds and behavior in one place.
+### Timing
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `FACE_COOLDOWN_TIME` | 10s | Delay before same person counted again |
+| `RECENT_PERSON_WINDOW` | 120s | Window for fallback matching |
 
-## Database Schema
-
-The system uses SQLite with the following tables:
-
-### persons
-- `person_id` (TEXT PRIMARY KEY): Unique identifier
-- `name` (TEXT): Person's name
-- `consent_ts` (TEXT): Consent timestamp
-
-### faces
-- `person_id` (TEXT): Links to persons table
-- `embedding` (BLOB): Face embedding vector
-- `created_ts` (TEXT): Creation timestamp
-
-### crossings
-- `id` (INTEGER PRIMARY KEY): Event ID
-- `person_id` (TEXT): Links to persons table
-- `direction` (TEXT): 'in' or 'out'
-- `t_cross` (REAL): Unix timestamp of crossing
+### Recording
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_RECORDING` | True | Master recording toggle |
+| `RECORDING_SEGMENT_DURATION` | 1800s | Segment length (30 min) |
+| `RECORDING_FRAME_RATE` | 15 | FPS for recordings |
 
 ## API Endpoints
 
-### GET /stats
-Returns current statistics including:
-- `unique_visitors`: Count of unique people detected
-- `avg_dwell_minutes`: Average time spent in the area
-- `total_in`: Total entry events
-- `total_out`: Total exit events  
-- `current_occupancy`: Current number of people in the area
+### Stats
+```bash
+curl http://localhost:8000/stats
+```
+```json
+{
+  "unique_visitors": 5,
+  "known_faces": 12,
+  "total_in": 15,
+  "body_in": 20,
+  "peer_status": "connected",
+  "peer_data": {"unique_visitors": 7}
+}
+```
 
-### GET /
-Returns API information and available endpoints
+### Cameras
+```bash
+# List cameras
+curl http://localhost:8000/cameras
 
-## How It Works
+# Configure cameras
+curl -X POST http://localhost:8000/cameras/config \
+  -H "Content-Type: application/json" \
+  -d '{"entry_cam": 0, "exit_cam": 1, "split_screen": false}'
+```
 
-1. **Detection**: YOLO v8 detects and tracks people in each frame
-2. **Tracking**: ByteTrack assigns unique IDs to maintain consistent tracking
-3. **Face Recognition**: InsightFace extracts face embeddings when available
-4. **Matching**: Embeddings are compared against known faces using cosine similarity
-5. **Line Crossing**: Direction is determined when a person crosses the virtual line
-6. **Logging**: Events are stored in SQLite for analytics
-7. **Statistics**: Real-time stats are computed and served via FastAPI
+### Peer Sync
+```bash
+# Get all faces (for sync)
+curl http://localhost:8000/sync/faces/all
 
-## Troubleshooting
-
-### Camera not working
-- Check camera permissions in System Preferences → Security & Privacy → Camera
-- Try a different camera source: `counter.run(source=1)` in main.py
-
-### Low face detection rate
-- Ensure good lighting conditions
-- Adjust `MIN_FACE_SIZE` in main.py
-- Consider using a higher resolution camera
-
-### Performance issues
-- Reduce detection size: Change `det_size=(640, 640)` to `(480, 480)`
-- Use lighter YOLO model: Already using yolov8n (nano)
-- Reduce frame processing rate by adding frame skipping
+# Push a face to peer
+curl -X POST http://localhost:8000/sync/face \
+  -H "Content-Type: application/json" \
+  -d '{"person_id": "visitor_1", "name": "Visitor 1", "embedding": [...]}'
+```
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   Camera    │────▶│     YOLO     │────▶│  ByteTrack  │
-└─────────────┘     └──────────────┘     └─────────────┘
-                            │                     │
-                            ▼                     ▼
-                    ┌──────────────┐     ┌─────────────┐
-                    │  InsightFace │     │   SQLite    │
-                    └──────────────┘     └─────────────┘
-                            │                     │
-                            ▼                     ▼
-                    ┌──────────────┐     ┌─────────────┐
-                    │   Matching   │────▶│   FastAPI   │
-                    └──────────────┘     └─────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Station A                               │
+├─────────────┬──────────────┬─────────────┬─────────────────┤
+│  Camera A   │   Camera B   │  Side Cam   │   Watchlist     │
+│  (Entry)    │   (Entry)    │  (Body)     │   Folder        │
+└──────┬──────┴──────┬───────┴──────┬──────┴────────┬────────┘
+       │             │              │               │
+       ▼             ▼              ▼               ▼
+┌──────────────────────────────────────────────────────────────┐
+│                    main_dual_camera.py                       │
+│  ┌─────────┐  ┌────────────┐  ┌──────────┐  ┌─────────────┐ │
+│  │  YOLO   │  │ InsightFace│  │ Watchlist│  │ Video       │ │
+│  │Detection│  │ Embeddings │  │ Manager  │  │ Recorder    │ │
+│  └────┬────┘  └─────┬──────┘  └────┬─────┘  └──────┬──────┘ │
+│       └─────────────┴──────────────┴───────────────┘        │
+│                          │                                   │
+│                    ┌─────┴─────┐                            │
+│                    │  SQLite   │                            │
+│                    │  Database │                            │
+│                    └─────┬─────┘                            │
+└──────────────────────────┼──────────────────────────────────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+        ┌──────────┐ ┌──────────┐ ┌──────────┐
+        │ FastAPI  │ │ Dashboard│ │ iOS App  │
+        │ :8000    │ │ :8081    │ │          │
+        └────┬─────┘ └──────────┘ └──────────┘
+             │
+             ▼ (Tailscale)
+┌─────────────────────────────────────────────────────────────┐
+│                      Station B (Peer)                        │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Performance Metrics
+## Database Schema
+
+### persons
+| Column | Type | Description |
+|--------|------|-------------|
+| person_id | TEXT | Unique identifier (e.g., visitor_1) |
+| name | TEXT | Display name (e.g., Visitor 1) |
+| consent_ts | TEXT | Creation timestamp |
+| thumbnail_path | TEXT | Path to face thumbnail |
+
+### faces
+| Column | Type | Description |
+|--------|------|-------------|
+| person_id | TEXT | Links to persons table |
+| embedding | BLOB | 512D face embedding vector |
+| created_ts | TEXT | Creation timestamp |
+
+### crossings
+| Column | Type | Description |
+|--------|------|-------------|
+| person_id | TEXT | Links to persons table |
+| direction | TEXT | 'in' or 'out' |
+| t_cross | REAL | Unix timestamp |
+
+### watchlist_alerts
+| Column | Type | Description |
+|--------|------|-------------|
+| name | TEXT | Watchlist person name |
+| similarity | REAL | Match confidence |
+| detected_at | REAL | Unix timestamp |
+| acknowledged | INTEGER | 0 or 1 |
+
+## Troubleshooting
+
+### Camera not working
+- Check camera permissions: System Preferences → Privacy & Security → Camera
+- For RTSP: verify credentials and URL format
+
+### Low face detection rate
+- Ensure good lighting
+- Adjust `MIN_FACE_SIZE` in config.py
+- Check camera angle (frontal faces work best)
+
+### Peer sync not working
+- Verify Tailscale is connected on both machines
+- Check `PEER_URL` is set correctly
+- Ensure port 8000 is accessible
+
+### Video compression not running
+- Install ffmpeg: `brew install ffmpeg`
+- Check logs for compression errors
+
+## Performance
 
 On Apple M3:
 - Processing Speed: ~25-30 FPS
 - Face Detection Rate: ~85-95% (good lighting)
-- Tracking Accuracy: ~95%
 - Memory Usage: ~500-800 MB
+- Video Compression: ~70-90% size reduction
 
 ## License
 
@@ -190,4 +298,4 @@ This project is for demonstration purposes.
 
 ## Support
 
-For issues or questions, check the logs in the terminal for detailed error messages.
+For issues, check the terminal logs for detailed error messages.
