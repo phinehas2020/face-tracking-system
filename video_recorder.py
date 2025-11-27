@@ -5,8 +5,11 @@ import time
 import os
 import subprocess
 import logging
+import atexit
+import signal
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from config import (
     RECORDING_SEGMENT_DURATION,
@@ -16,6 +19,80 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Global registry of active recorders for cleanup
+_active_recorders = []
+_cleanup_lock = threading.Lock()
+
+
+def _cleanup_all_recorders():
+    """Cleanup function called on exit to ensure all files are properly closed."""
+    with _cleanup_lock:
+        for recorder in _active_recorders:
+            try:
+                recorder.stop()
+            except Exception as e:
+                logger.error(f"Error stopping recorder: {e}")
+
+
+# Register cleanup on normal exit
+atexit.register(_cleanup_all_recorders)
+
+
+def repair_video_file(file_path: str) -> bool:
+    """
+    Attempt to repair a corrupted video file using ffmpeg.
+    Returns True if repair was successful.
+    """
+    file_path = Path(file_path)
+    if not file_path.exists():
+        return False
+
+    # Check if file is too small (likely corrupt/empty)
+    if file_path.stat().st_size < 10000:  # Less than 10KB
+        logger.warning(f"File too small, likely empty: {file_path}")
+        return False
+
+    output_path = file_path.with_suffix('.repaired.mp4')
+
+    try:
+        cmd = [
+            'ffmpeg',
+            '-err_detect', 'ignore_err',  # Ignore errors
+            '-i', str(file_path),
+            '-c', 'copy',  # Just remux, don't re-encode
+            '-movflags', '+faststart',
+            '-y',
+            '-loglevel', 'error',
+            str(output_path)
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+        if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 1000:
+            # Replace original with repaired
+            file_path.unlink()
+            output_path.rename(file_path)
+            logger.info(f"Repaired video file: {file_path}")
+            return True
+        else:
+            if output_path.exists():
+                output_path.unlink()
+            return False
+
+    except FileNotFoundError:
+        logger.warning("ffmpeg not found - cannot repair video")
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout repairing {file_path}")
+        if output_path.exists():
+            output_path.unlink()
+        return False
+    except Exception as e:
+        logger.error(f"Error repairing {file_path}: {e}")
+        if output_path.exists():
+            output_path.unlink()
+        return False
 
 
 class VideoCompressor:
@@ -71,6 +148,7 @@ class VideoCompressor:
             # Run ffmpeg compression
             cmd = [
                 'ffmpeg',
+                '-err_detect', 'ignore_err',  # Handle potentially corrupt input
                 '-i', str(input_path),
                 '-c:v', 'libx264',
                 '-preset', RECORDING_COMPRESS_PRESET,
@@ -84,12 +162,12 @@ class VideoCompressor:
             logger.info(f"Compressing: {input_path.name} ({original_size:.1f} MB)")
             start_time = time.time()
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
-            if result.returncode == 0 and output_path.exists():
+            if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 1000:
                 # Get compressed file size
                 compressed_size = output_path.stat().st_size / (1024 * 1024)  # MB
-                reduction = ((original_size - compressed_size) / original_size) * 100
+                reduction = ((original_size - compressed_size) / original_size) * 100 if original_size > 0 else 0
                 duration = time.time() - start_time
 
                 # Replace original with compressed
@@ -108,6 +186,10 @@ class VideoCompressor:
 
         except FileNotFoundError:
             logger.warning("ffmpeg not found - skipping compression. Install with: brew install ffmpeg")
+        except subprocess.TimeoutExpired:
+            logger.error(f"Compression timeout for {input_path}")
+            if output_path.exists():
+                output_path.unlink()
         except Exception as e:
             logger.error(f"Error compressing {input_path}: {e}")
             # Clean up on error
@@ -124,7 +206,7 @@ class ThreadedVideoRecorder:
     """
 
     # Shared compressor instance for all recorders
-    _compressor = None
+    _compressor: Optional[VideoCompressor] = None
     _compressor_lock = threading.Lock()
 
     @classmethod
@@ -155,6 +237,7 @@ class ThreadedVideoRecorder:
         self.writer = None
         self.current_file_path = None
         self.file_start_time = 0
+        self._stopped = False
 
         # Ensure base directory exists
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -162,7 +245,12 @@ class ThreadedVideoRecorder:
         # Get shared compressor
         self.compressor = self.get_compressor(base_dir)
 
-        self.thread = threading.Thread(target=self._record_loop, daemon=True)
+        # Register for cleanup
+        with _cleanup_lock:
+            _active_recorders.append(self)
+
+        # NOT a daemon thread - we want it to finish properly on exit
+        self.thread = threading.Thread(target=self._record_loop, daemon=False)
         self.thread.start()
         logger.info(f"Started video recorder for '{camera_name}' ({width}x{height} @ {fps}fps)")
 
@@ -189,9 +277,29 @@ class ThreadedVideoRecorder:
 
     def stop(self):
         """Signal the recorder to stop and wait for it to finish writing the queue."""
+        if self._stopped:
+            return
+
+        self._stopped = True
         self.stop_event.set()
-        self.thread.join()
+
+        # Wait for thread to finish (with timeout)
+        if self.thread.is_alive():
+            self.thread.join(timeout=5.0)
+
+        # Close writer and queue final file for compression
+        old_file = self.current_file_path
         self._close_writer()
+
+        # Queue the final segment for compression
+        if old_file and Path(old_file).exists():
+            self.compressor.queue_for_compression(old_file)
+
+        # Unregister from cleanup
+        with _cleanup_lock:
+            if self in _active_recorders:
+                _active_recorders.remove(self)
+
         logger.info(f"Stopped video recorder for '{self.camera_name}'")
 
     def _record_loop(self):
@@ -256,5 +364,8 @@ class ThreadedVideoRecorder:
 
     def _close_writer(self):
         if self.writer:
-            self.writer.release()
+            try:
+                self.writer.release()
+            except Exception as e:
+                logger.error(f"Error releasing video writer: {e}")
             self.writer = None
