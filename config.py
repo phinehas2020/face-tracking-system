@@ -36,5 +36,7 @@ APPEARANCE_MIN_AREA = 5000  # Minimum pixel area for a person crop before comput
 
 # --- Video Recording Configuration ---
 ENABLE_RECORDING = True  # Master toggle for video recording.
-RECORDING_SEGMENT_DURATION = 3600  # Duration in seconds for each video file (e.g., 1 hour).
+RECORDING_SEGMENT_DURATION = 1800  # Duration in seconds for each video file (30 minutes).
 RECORDING_FRAME_RATE = 15  # Target FPS for the recorded video files.
+RECORDING_COMPRESS_CRF = 28  # FFmpeg CRF value for compression (18=high quality, 28=smaller, 35=very small).
+RECORDING_COMPRESS_PRESET = "fast"  # FFmpeg preset: ultrafast, fast, medium, slow (slower=smaller file).
