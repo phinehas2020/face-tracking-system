@@ -48,9 +48,17 @@ struct ContentView: View {
                             GridItem(.flexible())
                         ], spacing: 16) {
                             StatCard(
-                                icon: "person.fill",
+                                icon: "a.circle.fill",
                                 value: "\(viewModel.stats?.uniqueVisitors ?? 0)",
-                                label: "THIS STATION"
+                                label: "STATION A",
+                                subtitle: "This"
+                            )
+
+                            StatCard(
+                                icon: "b.circle.fill",
+                                value: "\(viewModel.stats?.peerData?.uniqueVisitors ?? 0)",
+                                label: "STATION B",
+                                subtitle: viewModel.stats?.peerStatus == "connected" ? "Peer" : "Offline"
                             )
 
                             StatCard(
@@ -64,13 +72,6 @@ struct ContentView: View {
                                 value: "\(viewModel.stats?.bodyNet ?? 0)",
                                 label: "SIDE CAMERA",
                                 subtitle: viewModel.stats?.lastBodyEvent != nil ? "Active" : "Idle"
-                            )
-
-                            StatCard(
-                                icon: "antenna.radiowaves.left.and.right",
-                                value: viewModel.stats?.peerStatus == "connected" ? "Online" : "Offline",
-                                label: "PEER STATUS",
-                                isText: true
                             )
                         }
                         .padding(.horizontal)

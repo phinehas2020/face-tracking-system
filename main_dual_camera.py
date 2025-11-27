@@ -407,6 +407,22 @@ class DualCameraCounter:
 
         logger.info(f"Loaded embeddings for {len(self.known_embeddings)} known people. Next Visitor ID: {self.next_visitor_idx}")
 
+    def _find_matching_person_by_embedding(self, embedding: np.ndarray) -> Optional[str]:
+        """Check if embedding matches any known person using PERSON_MERGE_THRESHOLD"""
+        best_match = None
+        best_similarity = -1.0
+
+        for person_id, embeddings in self.known_embeddings.items():
+            for known_embedding in embeddings:
+                similarity = float(np.dot(embedding, known_embedding))
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match = person_id
+
+        if best_match and best_similarity >= PERSON_MERGE_THRESHOLD:
+            return best_match
+        return None
+
     def sync_from_peer(self):
         """Pull all existing faces from peer station on startup"""
         if not PEER_URL:
@@ -424,7 +440,8 @@ class DualCameraCounter:
                 data = response.json()
                 faces = data.get("faces", [])
                 imported = 0
-                skipped = 0
+                skipped_id = 0
+                skipped_embedding = 0
 
                 for face in faces:
                     person_id = face.get("person_id")
@@ -434,15 +451,23 @@ class DualCameraCounter:
                     if not person_id or not embedding_list:
                         continue
 
-                    # Skip if we already have this person
+                    # Skip if we already have this exact person_id
                     if person_id in self.known_embeddings:
-                        skipped += 1
+                        skipped_id += 1
                         continue
 
-                    # Add to database and memory
+                    # Normalize embedding
                     embedding = np.array(embedding_list, dtype=np.float32)
                     embedding = embedding / np.linalg.norm(embedding)
 
+                    # Check if this face matches an existing person by embedding similarity
+                    existing_match = self._find_matching_person_by_embedding(embedding)
+                    if existing_match:
+                        logger.info(f"PEER SYNC: Skipping {person_id} - matches existing {existing_match} by embedding")
+                        skipped_embedding += 1
+                        continue
+
+                    # Add to database and memory
                     cursor = self.db_conn.cursor()
 
                     # Check if person exists in DB
@@ -475,7 +500,7 @@ class DualCameraCounter:
 
                     imported += 1
 
-                logger.info(f"PEER SYNC: Imported {imported} faces from peer, skipped {skipped} existing")
+                logger.info(f"PEER SYNC: Imported {imported} faces, skipped {skipped_id} by ID, {skipped_embedding} by embedding match")
 
                 # Update stats to reflect new known_faces count
                 if imported > 0:
@@ -1716,6 +1741,7 @@ async def sync_faces_from_peer(client: httpx.AsyncClient):
         data = response.json()
         faces = data.get("faces", [])
         imported = 0
+        skipped_embedding = 0
 
         for face in faces:
             person_id = face.get("person_id")
@@ -1725,13 +1751,20 @@ async def sync_faces_from_peer(client: httpx.AsyncClient):
             if not person_id or not embedding_list:
                 continue
 
-            # Skip if we already have this person
+            # Skip if we already have this exact person_id
             if person_id in counter.known_embeddings:
                 continue
 
-            # Add to database and memory
+            # Normalize embedding
             embedding = np.array(embedding_list, dtype=np.float32)
             embedding = embedding / np.linalg.norm(embedding)
+
+            # Check if this face matches an existing person by embedding similarity
+            existing_match = counter._find_matching_person_by_embedding(embedding)
+            if existing_match:
+                logger.debug(f"PEER SYNC: Skipping {person_id} - matches existing {existing_match} by embedding")
+                skipped_embedding += 1
+                continue
 
             cursor = counter.db_conn.cursor()
 
@@ -1765,9 +1798,10 @@ async def sync_faces_from_peer(client: httpx.AsyncClient):
 
             imported += 1
 
-        if imported > 0:
-            logger.info(f"PEER SYNC: Imported {imported} new faces from peer")
-            counter.update_stats()
+        if imported > 0 or skipped_embedding > 0:
+            logger.info(f"PEER SYNC: Imported {imported} new faces, skipped {skipped_embedding} duplicates by embedding")
+            if imported > 0:
+                counter.update_stats()
 
         return imported
 
