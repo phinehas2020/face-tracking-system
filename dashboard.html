@@ -519,13 +519,9 @@
 
         <div class="metric-card">
             <div class="metric-icon">📷</div>
-            <div class="metric-value" id="body-net">0</div>
+            <div class="metric-value" id="body-in">0</div>
             <div class="metric-label">Side Camera</div>
             <div class="metric-change" id="drift-change">Idle</div>
-            <div class="metric-subgrid">
-                <div>In: <strong id="body-in">0</strong></div>
-                <div>Out: <strong id="body-out">0</strong></div>
-            </div>
         </div>
     </div>
 
@@ -718,25 +714,17 @@
 
         function updateBodyAssist(data) {
             const bodyIn = data.body_in ?? 0;
-            const bodyOut = data.body_out ?? 0;
-            const bodyNet = data.body_net ?? (bodyIn - bodyOut);
-            const drift = data.count_drift ?? 0;
             const hasBodySignal = Boolean(data.last_body_event);
 
             document.getElementById('body-in').textContent = bodyIn;
-            document.getElementById('body-out').textContent = bodyOut;
-            document.getElementById('body-net').textContent = bodyNet;
 
             const driftElement = document.getElementById('drift-change');
             if (!hasBodySignal) {
                 driftElement.textContent = 'Idle';
                 driftElement.className = 'metric-change';
-            } else if (drift === 0) {
-                driftElement.textContent = 'Synced';
-                driftElement.className = 'metric-change increase';
             } else {
-                driftElement.textContent = `Drift: ${drift > 0 ? '+' : ''}${drift}`;
-                driftElement.className = 'metric-change ' + (Math.abs(drift) <= SIDE_DRIFT_CAUTION ? 'increase' : 'decrease');
+                driftElement.textContent = 'Active';
+                driftElement.className = 'metric-change increase';
             }
         }
 

@@ -69,7 +69,7 @@ struct ContentView: View {
 
                             StatCard(
                                 icon: "camera.fill",
-                                value: "\(viewModel.stats?.bodyNet ?? 0)",
+                                value: "\(viewModel.stats?.bodyIn ?? 0)",
                                 label: "SIDE CAMERA",
                                 subtitle: viewModel.stats?.lastBodyEvent != nil ? "Active" : "Idle"
                             )
