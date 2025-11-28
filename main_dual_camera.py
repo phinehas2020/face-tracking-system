@@ -252,6 +252,7 @@ class DualCameraCounter:
         self._init_face_analyzer()
         self._init_database()
         self._load_known_faces()
+        self.update_stats()  # Update stats after loading from database
         self._init_watchlist()
         self.sync_from_peer()  # Pull existing faces from peer station
 
