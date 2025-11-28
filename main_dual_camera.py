@@ -271,7 +271,7 @@ class DualCameraCounter:
                 name='buffalo_l',
                 providers=['CoreMLExecutionProvider', 'CPUExecutionProvider']
             )
-            self.face_app.prepare(ctx_id=0, det_size=(480, 480))
+            self.face_app.prepare(ctx_id=0, det_size=(640, 640))  # Must be 640 for CoreML
             logger.info("Face analyzer initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize face analyzer: {e}")
