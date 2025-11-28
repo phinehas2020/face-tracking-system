@@ -8,8 +8,8 @@ PERSON_MERGE_THRESHOLD = 0.45  # Similarity threshold to merge two temporary per
 
 # --- Face Quality & Detection ---
 MIN_FACE_SIZE = 90  # Minimum face size in pixels (width or height) to be considered for recognition.
-MAX_FACE_YAW_DEG = 55  # Maximum absolute yaw (left/right turn) angle in degrees.
-MAX_FACE_PITCH_DEG = 50  # Maximum absolute pitch (up/down tilt) angle in degrees.
+MAX_FACE_YAW_DEG = 90  # Maximum absolute yaw (left/right turn) angle in degrees. 90 = allow up to sideways.
+MAX_FACE_PITCH_DEG = 90  # Maximum absolute pitch (up/down tilt) angle in degrees. 90 = no practical limit.
 
 # --- Timing & Cooldowns ---
 FACE_COOLDOWN_TIME = 10  # Seconds before the same person can be counted again at the same gate (entry/exit).
