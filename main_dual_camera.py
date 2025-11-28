@@ -258,7 +258,7 @@ class DualCameraCounter:
     def _init_yolo(self):
         """Initialize YOLO model for detection"""
         try:
-            self.yolo_model = YOLO('yolov8m.pt')
+            self.yolo_model = YOLO('yolov8s.pt')
             logger.info("YOLO model initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize YOLO: {e}")
@@ -271,7 +271,7 @@ class DualCameraCounter:
                 name='buffalo_l',
                 providers=['CoreMLExecutionProvider', 'CPUExecutionProvider']
             )
-            self.face_app.prepare(ctx_id=0, det_size=(640, 640))
+            self.face_app.prepare(ctx_id=0, det_size=(480, 480))
             logger.info("Face analyzer initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize face analyzer: {e}")
