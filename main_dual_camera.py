@@ -424,7 +424,7 @@ class DualCameraCounter:
         best_match = None
         best_similarity = -1.0
 
-        for person_id, embeddings in self.known_embeddings.items():
+        for person_id, embeddings in list(self.known_embeddings.items()):
             for known_embedding in embeddings:
                 similarity = float(np.dot(embedding, known_embedding))
                 if similarity > best_similarity:
@@ -924,7 +924,7 @@ class DualCameraCounter:
         match_is_temp = False
 
         # Check permanent embeddings (multiple samples per person)
-        for person_id, embeddings in self.known_embeddings.items():
+        for person_id, embeddings in list(self.known_embeddings.items()):
             for known_embedding in embeddings:
                 similarity = float(np.dot(embedding, known_embedding))
                 if similarity > best_similarity:
