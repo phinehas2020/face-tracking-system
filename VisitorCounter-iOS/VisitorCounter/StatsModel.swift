@@ -37,9 +37,11 @@ struct StatsResponse: Codable {
 struct PeerData: Codable {
     let uniqueVisitors: Int?
     let currentOccupancy: Int?
+    let bodyIn: Int?
 
     enum CodingKeys: String, CodingKey {
         case uniqueVisitors = "unique_visitors"
         case currentOccupancy = "current_occupancy"
+        case bodyIn = "body_in"
     }
 }

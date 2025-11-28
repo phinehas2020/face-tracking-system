@@ -82,16 +82,17 @@ struct ContentView: View {
                             )
 
                             StatCard(
-                                icon: "chart.line.uptrend.xyaxis",
-                                value: "\(viewModel.stats?.totalIn ?? 0)",
-                                label: "TOTAL ENTRIES"
+                                icon: "camera.fill",
+                                value: "\(viewModel.stats?.bodyIn ?? 0)",
+                                label: "SIDE CAM A",
+                                subtitle: "This"
                             )
 
                             StatCard(
                                 icon: "camera.fill",
-                                value: "\(viewModel.stats?.bodyIn ?? 0)",
-                                label: "SIDE CAMERA",
-                                subtitle: viewModel.stats?.lastBodyEvent != nil ? "Active" : "Idle"
+                                value: "\(viewModel.stats?.peerData?.bodyIn ?? 0)",
+                                label: "SIDE CAM B",
+                                subtitle: viewModel.stats?.peerStatus == "connected" ? "Peer" : "Offline"
                             )
                         }
                         .padding(.horizontal)
