@@ -268,6 +268,12 @@ class DualCameraCounter:
                 logger.info("YOLO model initialized successfully using MPS acceleration")
             else:
                 logger.info("YOLO model initialized successfully (CPU/CUDA)")
+            
+            # Warmup to ensure model is initialized/fused before threading
+            logger.info("Warming up YOLO model...")
+            # Run one dummy inference to trigger auto-backend setup
+            self.yolo_model(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
+
         except Exception as e:
             logger.error(f"Failed to initialize YOLO: {e}")
             raise
