@@ -37,6 +37,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from pathlib import Path
 from collections import defaultdict, deque
 from threading import Thread, Lock
+import threading
 import signal
 
 import cv2
@@ -219,7 +220,7 @@ class DualCameraCounter:
 
         self.yolo_model = None
         self.face_app = None
-        self.db_conn = None
+        self._db_local = None  # Will be initialized in _init_database
 
         # Face tracking
         self.known_embeddings = defaultdict(lambda: deque(maxlen=MAX_EMBEDDINGS_PER_PERSON))
@@ -239,6 +240,9 @@ class DualCameraCounter:
         self._last_appearance_cleanup = 0.0
         self.recent_entry_positions = deque()  # (x, y, timestamp)
         self.recent_entry_candidates = deque(maxlen=50)  # (person_id, embedding, timestamp)
+        # Serialize access to shared native models to avoid thread-safety crashes
+        self.yolo_lock = Lock()
+        self.face_lock = Lock()
 
         # Video Recorders
         self.entry_recorder = None
@@ -301,16 +305,25 @@ class DualCameraCounter:
             self.watchlist = None
 
     def _init_database(self):
-        """Initialize database connection"""
-        self.db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        self.db_conn.execute("PRAGMA foreign_keys = ON")
+        """Initialize database with thread-local connections for thread safety"""
+        self._db_local = threading.local()
+        # Create initial connection for schema setup
+        conn = self._get_db_conn()
         self._ensure_schema()
         self._migrate_temp_ids()
         logger.info(f"Connected to database: {DB_PATH}")
 
+    def _get_db_conn(self) -> sqlite3.Connection:
+        """Get a thread-local database connection (creates one if needed)"""
+        if not hasattr(self._db_local, 'conn') or self._db_local.conn is None:
+            self._db_local.conn = sqlite3.connect(DB_PATH)
+            self._db_local.conn.execute("PRAGMA foreign_keys = ON")
+        return self._db_local.conn
+
     def _migrate_temp_ids(self):
         """Migrate legacy temp_ IDs to visitor_N format"""
-        cursor = self.db_conn.cursor()
+        conn = self._get_db_conn()
+        cursor = conn.cursor()
         
         # 1. Determine next available visitor index from DB
         cursor.execute("SELECT name FROM persons WHERE name LIKE 'Visitor %'")
@@ -376,18 +389,19 @@ class DualCameraCounter:
                 
             except Exception as e:
                 logger.error(f"Database migration failed for {temp_id}: {e}")
-                
-        self.db_conn.commit()
+
+        conn.commit()
         self.next_visitor_idx = current_idx
 
     def _ensure_schema(self):
         """Ensure new columns exist for older databases"""
-        cursor = self.db_conn.cursor()
+        conn = self._get_db_conn()
+        cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(persons)")
         columns = {row[1] for row in cursor.fetchall()}
         if 'thumbnail_path' not in columns:
             cursor.execute("ALTER TABLE persons ADD COLUMN thumbnail_path TEXT")
-            self.db_conn.commit()
+            conn.commit()
         # Body counter table for side-view verification
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS body_crossings (
@@ -398,11 +412,12 @@ class DualCameraCounter:
             )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_body_crossings_time ON body_crossings(t_cross)")
-        self.db_conn.commit()
+        conn.commit()
     
     def _load_known_faces(self):
         """Load known face embeddings from database"""
-        cursor = self.db_conn.cursor()
+        conn = self._get_db_conn()
+        cursor = conn.cursor()
         cursor.execute("""
             SELECT p.person_id, p.name, p.thumbnail_path, f.embedding
             FROM persons p
@@ -494,7 +509,8 @@ class DualCameraCounter:
                         continue
 
                     # Add to database and memory
-                    cursor = self.db_conn.cursor()
+                    conn = self._get_db_conn()
+                    cursor = conn.cursor()
 
                     # Check if person exists in DB
                     cursor.execute("SELECT 1 FROM persons WHERE person_id = ?", (person_id,))
@@ -509,7 +525,7 @@ class DualCameraCounter:
                             VALUES (?, ?, ?)
                         """, (person_id, pickle.dumps(embedding), datetime.now().isoformat()))
 
-                        self.db_conn.commit()
+                        conn.commit()
 
                     # Add to memory
                     self.known_embeddings[person_id].append(embedding)
@@ -594,24 +610,26 @@ class DualCameraCounter:
         self.known_embeddings[person_id].append(embedding)
 
         if persist:
-            cursor = self.db_conn.cursor()
+            conn = self._get_db_conn()
+            cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO faces (person_id, embedding, created_ts)
                 VALUES (?, ?, ?)
             """, (person_id, pickle.dumps(embedding), datetime.now().isoformat()))
-            self.db_conn.commit()
+            conn.commit()
 
     def update_person_thumbnail(self, person_id: str, thumbnail_path: Optional[str]):
         """Persist thumbnail path for a person"""
         if not thumbnail_path:
             return
 
-        cursor = self.db_conn.cursor()
+        conn = self._get_db_conn()
+        cursor = conn.cursor()
         cursor.execute(
             "UPDATE persons SET thumbnail_path = ? WHERE person_id = ?",
             (thumbnail_path, person_id)
         )
-        self.db_conn.commit()
+        conn.commit()
 
     def maybe_refresh_embedding(self, person_id: str, embedding: Optional[np.ndarray]):
         """Occasionally capture additional embeddings for robustness"""
@@ -874,7 +892,8 @@ class DualCameraCounter:
                 return None, None
 
             person_rgb = cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB)
-            faces = self.face_app.get(person_rgb)
+            with self.face_lock:
+                faces = self.face_app.get(person_rgb)
             if len(faces) == 0:
                 return None, None
 
@@ -1169,15 +1188,16 @@ class DualCameraCounter:
         if temp_id in self.person_names and self.person_names[temp_id].startswith("Visitor "):
             return temp_id
 
-        cursor = self.db_conn.cursor()
+        conn = self._get_db_conn()
+        cursor = conn.cursor()
 
         # Generate new ID and Name
         new_id = f"visitor_{self.next_visitor_idx}"
         name = f"Visitor {self.next_visitor_idx}"
         self.next_visitor_idx += 1
-        
+
         consent_ts = datetime.now().isoformat()
-        
+
         # Use new_id for thumbnail so folder is named correctly
         thumbnail_path = self.save_thumbnail(new_id, face_image)
 
@@ -1189,7 +1209,7 @@ class DualCameraCounter:
         if thumbnail_path:
             self.person_thumbnails[new_id] = thumbnail_path
 
-        self.db_conn.commit()
+        conn.commit()
         logger.info(f"Created permanent person: {new_id} ({name})")
         
         # Update name cache
@@ -1277,11 +1297,12 @@ class DualCameraCounter:
         if source_id == target_id:
             return
 
-        cursor = self.db_conn.cursor()
+        conn = self._get_db_conn()
+        cursor = conn.cursor()
         cursor.execute("UPDATE faces SET person_id=? WHERE person_id=?", (target_id, source_id))
         cursor.execute("UPDATE crossings SET person_id=? WHERE person_id=?", (target_id, source_id))
         cursor.execute("DELETE FROM persons WHERE person_id=?", (source_id,))
-        self.db_conn.commit()
+        conn.commit()
 
         # Merge embeddings
         if source_id in self.known_embeddings:
@@ -1318,16 +1339,18 @@ class DualCameraCounter:
     
     def log_crossing(self, person_id, direction, timestamp):
         """Log crossing event to database"""
-        cursor = self.db_conn.cursor()
+        conn = self._get_db_conn()
+        cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO crossings (person_id, direction, t_cross)
             VALUES (?, ?, ?)
         """, (person_id, direction, timestamp))
-        self.db_conn.commit()
+        conn.commit()
     
     def update_stats(self):
         """Update global statistics"""
-        cursor = self.db_conn.cursor()
+        conn = self._get_db_conn()
+        cursor = conn.cursor()
 
         with stats_lock:
             # Total known faces (synced across all stations)
@@ -1398,7 +1421,8 @@ class DualCameraCounter:
         self._prune_appearance_signatures()
         
         # Run YOLO detection
-        results = self.yolo_model(frame, conf=0.5, verbose=False, classes=[0])  # Only detect confident persons
+        with self.yolo_lock:
+            results = self.yolo_model(frame, conf=0.5, verbose=False, classes=[0])  # Only detect confident persons
         
         detections = []
         
@@ -1588,8 +1612,9 @@ class DualCameraCounter:
             if self.exit_recorder:
                 self.exit_recorder.stop()
             cv2.destroyAllWindows()
-            if self.db_conn:
-                self.db_conn.close()
+            # Close thread-local DB connection if it exists
+            if hasattr(self._db_local, 'conn') and self._db_local.conn:
+                self._db_local.conn.close()
 
 @app.get("/stats", response_model=StatsResponse)
 async def get_stats():
@@ -1862,7 +1887,8 @@ async def sync_faces_from_peer(client: httpx.AsyncClient):
                 skipped_embedding += 1
                 continue
 
-            cursor = counter.db_conn.cursor()
+            conn = counter._get_db_conn()
+            cursor = conn.cursor()
 
             # Check if person exists in DB
             cursor.execute("SELECT 1 FROM persons WHERE person_id = ?", (person_id,))
@@ -1877,7 +1903,7 @@ async def sync_faces_from_peer(client: httpx.AsyncClient):
                     VALUES (?, ?, ?)
                 """, (person_id, pickle.dumps(embedding), datetime.now().isoformat()))
 
-                counter.db_conn.commit()
+                conn.commit()
 
             # Add to memory
             counter.known_embeddings[person_id].append(embedding)
