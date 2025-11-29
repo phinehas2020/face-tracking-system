@@ -52,6 +52,7 @@ from pydantic import BaseModel
 import httpx
 import asyncio
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor
 
 # Load environment variables
 load_dotenv()
@@ -1492,6 +1493,9 @@ class DualCameraCounter:
         logger.info("Started dual camera system")
         logger.info("Press 'q' to quit, 's' to save snapshot")
         
+        # Use ThreadPoolExecutor for parallel processing of cameras
+        executor = ThreadPoolExecutor(max_workers=2)
+        
         try:
             while True:
                 if self.camera_reload_requested:
@@ -1544,8 +1548,14 @@ class DualCameraCounter:
                             self._last_exit_latency_log = now
                 
                 loop_start = time.time()
-                processed_entry = self.process_frame(frame_entry, 'entry_a', age_entry)
-                processed_exit = self.process_frame(frame_exit, 'entry_b', age_exit)
+                
+                # Process both frames in parallel
+                future_entry = executor.submit(self.process_frame, frame_entry, 'entry_a', age_entry)
+                future_exit = executor.submit(self.process_frame, frame_exit, 'entry_b', age_exit)
+                
+                processed_entry = future_entry.result()
+                processed_exit = future_exit.result()
+                
                 loop_time = time.time() - loop_start
                 if loop_time > 0.5:
                     logger.warning("Processing pipeline took %.2fs this cycle", loop_time)
