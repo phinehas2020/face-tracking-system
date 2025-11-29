@@ -260,7 +260,13 @@ class DualCameraCounter:
         """Initialize YOLO model for detection"""
         try:
             self.yolo_model = YOLO('yolov8s.pt')
-            logger.info("YOLO model initialized successfully")
+            # Attempt to use MPS (Metal Performance Shaders) if available on macOS
+            import torch
+            if torch.backends.mps.is_available():
+                self.yolo_model.to('mps')
+                logger.info("YOLO model initialized successfully using MPS acceleration")
+            else:
+                logger.info("YOLO model initialized successfully (CPU/CUDA)")
         except Exception as e:
             logger.error(f"Failed to initialize YOLO: {e}")
             raise
@@ -872,7 +878,7 @@ class DualCameraCounter:
             )
 
             # Stricter detection score (was 0.5)
-            if getattr(largest_face, "det_score", 1.0) < 0.65:
+            if getattr(largest_face, "det_score", 1.0) < 0.50:
                 logger.debug(f"Rejected face due to low detection score: {largest_face.det_score:.2f}")
                 return None, None
 
@@ -880,7 +886,7 @@ class DualCameraCounter:
             if pose is not None:
                 yaw, pitch, roll = map(abs, pose)
                 # Stricter pose limits (was 40)
-                if yaw > 30 or pitch > 30:
+                if yaw > 60 or pitch > 60:
                     logger.debug(
                         "Rejected face due to pose (yaw %.1f°, pitch %.1f°)", yaw, pitch
                     )
@@ -1418,12 +1424,12 @@ class DualCameraCounter:
                     color = (128, 128, 128)
 
                 # Appearance-based fallback for side/back exits
-                # if camera_type == 'exit' and person_id is None:
-                #     fallback_id = self.process_exit_by_appearance(appearance_sig)
-                #     if fallback_id:
-                #         person_id = fallback_id
-                #         color = (0, 165, 255)  # Orange for assisted match
-                #         match_hint = "assist"
+                if camera_type == 'exit' and person_id is None:
+                    fallback_id = self.process_exit_by_appearance(appearance_sig)
+                    if fallback_id:
+                        person_id = fallback_id
+                        color = (0, 165, 255)  # Orange for assisted match
+                        match_hint = "assist"
                 
                 # Draw bounding box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
