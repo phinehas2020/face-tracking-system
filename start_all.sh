@@ -7,7 +7,7 @@ echo "🚀 Starting Face Recognition System"
 echo "========================================"
 
 # Clean up any previous processes so ports are free
-pkill -f "python3 main_dual_camera.py" 2>/dev/null
+pkill -f "python3 main_unified.py" 2>/dev/null
 pkill -f "python3 serve_dashboard.py" 2>/dev/null
 sleep 1
 
@@ -104,7 +104,7 @@ fi
 echo ""
 if [ "$split_mode" = true ]; then
     echo -e "${YELLOW}Using camera index $entry_cam for split-screen mode.${NC}"
-    PORT=$API_PORT python3 main_dual_camera.py --entry-cam "$entry_cam" --exit-cam "$exit_cam" --split-screen &
+    PORT=$API_PORT python3 main_unified.py --entry-cam "$entry_cam" --exit-cam "$exit_cam" &
     CAMERA_PID=$!
 else
     echo -e "${GREEN}Entry A Camera: $entry_cam${NC}"
@@ -112,7 +112,7 @@ else
     if [ -n "$PEER_URL" ]; then
         echo -e "${GREEN}Peer URL: $PEER_URL${NC}"
     fi
-    PORT=$API_PORT python3 main_dual_camera.py --entry-cam "$entry_cam" --exit-cam "$exit_cam" &
+    PORT=$API_PORT python3 main_unified.py --entry-cam "$entry_cam" --exit-cam "$exit_cam" &
     CAMERA_PID=$!
 fi
 
@@ -164,7 +164,7 @@ cleanup() {
     if [[ -n "$BODY_PID" ]]; then
         kill $BODY_PID 2>/dev/null
     fi
-    pkill -f "python3 main_dual_camera.py" 2>/dev/null
+    pkill -f "python3 main_unified.py" 2>/dev/null
     pkill -f "python3 serve_dashboard.py" 2>/dev/null
     pkill -f "python3 main_body_counter.py" 2>/dev/null
     echo "Goodbye!"
