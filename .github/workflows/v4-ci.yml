@@ -1,0 +1,64 @@
+name: v4 CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/v4-ci.yml"
+      - ".gitignore"
+      - "README.md"
+      - "start_all.sh"
+      - "v4/**"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/v4-ci.yml"
+      - ".gitignore"
+      - "README.md"
+      - "start_all.sh"
+      - "v4/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v4-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: v4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: v4/pyproject.toml
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check backend tests
+      - run: pytest
+
+  command-center:
+    name: Command center
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: v4/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: v4/web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: npm run test:sites

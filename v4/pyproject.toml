@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ingress-event-intelligence"
+version = "4.0.0"
+description = "Ephemeral event passage counting, identity resolution, and replay intelligence"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "numpy>=2.0,<3",
+  "pydantic>=2.9,<3",
+  "uvicorn[standard]>=0.32,<1",
+]
+
+[project.optional-dependencies]
+vision = [
+  "insightface>=0.7.3,<1",
+  "onnxruntime>=1.20,<2",
+  "opencv-python>=4.10,<5",
+  "scikit-learn>=1.5,<2",
+  "ultralytics>=8.3,<9",
+]
+dev = [
+  "httpx2>=2.12,<3",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<7",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+ingress = "ingress.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend/ingress"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["backend"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -1,4 +1,18 @@
-# Face Recognition People Counter
+# Ingress Event Intelligence v4
+
+The repository now has a ground-up v4 rebuild for the two-lane event: synchronized three-camera replay, stable portal passages, YOLO26 + ByteTrack adapters, track-level face/body evidence, explainable event-wide deduplication, operator review, measurable model comparisons, and verified end-of-event purge.
+
+```bash
+./start_all.sh
+```
+
+See [`v4/README.md`](v4/README.md) for the architecture, last-year-video training workflow, API, tests, and deployment contract.
+
+The original implementation remains below as a legacy reference. It is no longer the default startup path.
+
+---
+
+# Legacy Face Recognition People Counter
 
 A real-time people counting system with facial recognition, multi-station sync, watchlist alerts, and iOS companion app.
 
