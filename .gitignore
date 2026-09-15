@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 venv/
+.venv/
+node_modules/
+dist/
+.coverage
+.pytest_cache/
+.ruff_cache/
 .env
 
 # OS
@@ -20,6 +26,10 @@ test_snapshot/
 *.jpg
 *.png
 *.mp4
+
+# v4 ships purpose-built demo camera assets with the command center.
+!v4/web/public/assets/
+!v4/web/public/assets/**/*.webp
 
 # Models (optional, usually better to download them)
 # *.pt
