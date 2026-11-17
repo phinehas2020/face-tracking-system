@@ -4,6 +4,11 @@ All times are capture times on the same host's monotonic clock. ``event_id`` is
 the passage row's ID, not the station/event configuration ID. This module emits
 proposals only; the caller persists them while holding the shared session lock.
 Time gates restrict candidates but never constitute identity evidence.
+
+Two kinds of evidence can link a crossing: learned body appearance, and, when
+the crossing zone is enabled, the facing track's position at the door (see
+``crossing_zone``). ``zone_mode`` is ``off``, ``shadow`` (decide, record and
+learn, but assign nothing) or ``on``.
 """
 
 from __future__ import annotations
@@ -13,6 +18,8 @@ from dataclasses import dataclass, field
 from math import isfinite
 
 import numpy as np
+
+from .crossing_zone import GATE, CrossingZone
 
 
 @dataclass(frozen=True)
@@ -24,6 +31,8 @@ class AssociationProposal:
     appearance_score: float
     margin: float
     provenance: tuple[str, ...]
+    facing_tracks: tuple[str, ...] = ()
+    basis: str = "cross_view_appearance"
 
 
 @dataclass
@@ -34,12 +43,23 @@ class _Track:
     identity_id: str | None = None
     identity_source: str | None = None
     identity_conflict: bool = False
+    # (time, centre x, centre y, log height) in normalised image coordinates.
+    boxes: deque = field(default_factory=lambda: deque(maxlen=96))
+    background_at: float = float("-inf")
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Crossing:
     side_track_id: str
     captured_at: float
+    deadline: float
+    direction: str = "any"
+    # Set when the side track already had a face identity. Such a crossing is
+    # never linked here; it only checks the position evidence against a label.
+    known_identity: str | None = None
+    zone: dict | None = None
+    identities: dict = field(default_factory=dict)
+    conflict: bool = False
 
 
 class LiveAssociationCoordinator:
@@ -64,7 +84,19 @@ class LiveAssociationCoordinator:
         max_pending=512,
         max_track_gap_seconds=None,
         sole_candidate_threshold=None,
+        zone_mode="off",
+        zone_min_samples=20,
+        zone_margin=6.0,
     ):
+        if zone_mode not in {"off", "shadow", "on"} or zone_margin <= 0:
+            raise ValueError("Invalid crossing zone settings")
+        self.zone_mode = zone_mode
+        # Squared-distance margin; 6 is a likelihood ratio of about 20 to 1.
+        self.zone_margin = zone_margin
+        self.zone = CrossingZone(min_samples=zone_min_samples)
+        self.zone_stats = {"decisions": {}, "label_agree": 0, "label_disagree": 0}
+        self._zone_claims: OrderedDict[str, tuple[str, float]] = OrderedDict()
+        self._chains_cache = None
         if not (0 < similarity_threshold <= 1 and 0 < margin_threshold <= 1):
             raise ValueError("Invalid appearance thresholds")
         if not (0 < max_transition_seconds <= retention_seconds):
@@ -112,6 +144,8 @@ class LiveAssociationCoordinator:
         return decisions
 
     def _note(self, event_id, crossing, now, reason, **evidence):
+        if crossing.zone is not None:
+            evidence = {**evidence, "zone": crossing.zone}
         self.last_decisions[event_id] = {
             "event_id": event_id, "side_track_id": crossing.side_track_id,
             "crossing_at": crossing.captured_at, "decision_at": now,
@@ -132,6 +166,7 @@ class LiveAssociationCoordinator:
         identity_id: str | None = None,
         identity_source: str | None = None,
         ground_position=None,
+        box=None,
     ) -> None:
         if view not in self.tracks:
             raise ValueError("view must be side or facing")
@@ -150,6 +185,8 @@ class LiveAssociationCoordinator:
         while len(tracks) > self.max_tracks:
             self._drop_track(view, next(iter(tracks)))
 
+        if box is not None and self.zone_mode != "off":
+            self._observe_box(view, track, captured_at, box)
         self.attach_identity(view, track_id, identity_id, identity_source, captured_at)
         # Only the explicitly integrated learned encoder is admitted. Histograms,
         # time-only candidates and unknown feature types fail closed.
@@ -206,17 +243,33 @@ class LiveAssociationCoordinator:
         track.identity_id, track.identity_source = identity_id, identity_source
         return True
 
-    def register_crossing(self, event_id: str, side_track_id: str, captured_at: float) -> None:
+    def register_crossing(
+        self,
+        event_id: str,
+        side_track_id: str,
+        captured_at: float,
+        *,
+        direction: str = "any",
+        known_identity: str | None = None,
+    ) -> None:
         if not isfinite(captured_at) or event_id in self._emitted or event_id in self.pending:
+            return
+        if known_identity is not None and self.zone_mode == "off":
             return
         self._prune(max(self._latest_time, captured_at))
         if captured_at < self._latest_time - self.max_transition_seconds:
-            self.expired_count += 1
+            self.expired_count += known_identity is None
             return
-        self.pending[event_id] = _Crossing(side_track_id, captured_at)
+        self.pending[event_id] = _Crossing(
+            side_track_id,
+            captured_at,
+            captured_at + self.max_transition_seconds,
+            direction,
+            known_identity,
+        )
         while len(self.pending) > self.max_pending:
-            self.pending.popitem(last=False)
-            self.expired_count += 1
+            _, dropped = self.pending.popitem(last=False)
+            self.expired_count += dropped.known_identity is None
 
     def _time_compatible(self, left, right):
         if self.max_track_gap_seconds is None:
@@ -252,6 +305,16 @@ class LiveAssociationCoordinator:
         crossing = self.pending.get(event_id)
         if crossing is None:
             return None
+        zone_linked = crossing.zone is not None and crossing.zone["decision"] == "linked"
+        if crossing.known_identity is None and not (zone_linked and self.zone_mode == "on"):
+            proposal = self._resolve_appearance(event_id, crossing, now)
+            if proposal is not None:
+                return proposal
+        if self.zone_mode != "off":
+            return self._resolve_zone(event_id, crossing, now)
+        return None
+
+    def _resolve_appearance(self, event_id, crossing, now) -> AssociationProposal | None:
         side = self.tracks["side"].get(crossing.side_track_id)
         if side is None:
             self._note(event_id, crossing, now, "missing_side_track")
@@ -358,6 +421,245 @@ class LiveAssociationCoordinator:
             ),
         )
 
+    # --- Position evidence: the crossing zone -------------------------------
+
+    def _observe_box(self, view, track, captured_at, box) -> None:
+        try:
+            left, top, right, bottom = (float(value) for value in box)
+        except (TypeError, ValueError):
+            return
+        width, height = right - left, bottom - top
+        if not all(isfinite(v) for v in (left, top, right, bottom)) or width <= 0 or height <= 0:
+            return
+        if track.boxes and track.boxes[-1][0] >= captured_at:
+            return
+        entry = (captured_at, (left + right) / 2, (top + bottom) / 2, float(np.log(height)))
+        track.boxes.append(entry)
+        if view == "facing":
+            self._chains_cache = None
+            if captured_at - track.background_at >= 0.5:
+                track.background_at = captured_at
+                self.zone.add_background(entry[1:])
+
+    @staticmethod
+    def _state(track, at, gap):
+        """Box nearest the crossing instant, plus how far in time it is from it."""
+        boxes = track.boxes
+        if not boxes:
+            return None
+        if at <= boxes[0][0]:
+            offset, values = boxes[0][0] - at, boxes[0][1:]
+        elif at >= boxes[-1][0]:
+            offset, values = boxes[-1][0] - at, boxes[-1][1:]
+        else:
+            offset = 0.0
+            after = next(i for i, entry in enumerate(boxes) if entry[0] >= at)
+            a, b = boxes[after - 1], boxes[after]
+            weight = (at - a[0]) / (b[0] - a[0])
+            values = tuple(x + weight * (y - x) for x, y in zip(a[1:], b[1:], strict=True))
+        if abs(offset) > gap:
+            return None
+        return np.array([*values, offset])
+
+    @staticmethod
+    def _moving(track, at) -> bool:
+        """Someone crossing a line is in motion; someone standing in view is not."""
+        near = [entry[1:] for entry in track.boxes if abs(entry[0] - at) <= 1.5]
+        if len(near) < 2:
+            return False
+        spread = np.ptp(np.asarray(near), axis=0)
+        return bool(spread[0] >= 0.03 or spread[1] >= 0.03 or spread[2] >= 0.08)
+
+    @staticmethod
+    def _continues(earlier, later, max_gap=1.0) -> bool:
+        """``later`` picks up where ``earlier`` stopped: one person, tracked twice."""
+        end, start = earlier.boxes[-1], later.boxes[0]
+        if start[0] != later.first_seen or later.first_seen <= earlier.first_seen:
+            return False
+        if not -0.2 <= start[0] - end[0] <= max_gap:
+            return False
+        reach = 0.35 * float(np.exp(max(end[3], start[3]))) + 0.03
+        return (
+            abs(start[1] - end[1]) <= reach
+            and abs(start[2] - end[2]) <= reach
+            and abs(start[3] - end[3]) <= 0.5
+        )
+
+    def _chains(self) -> dict[str, list[str]]:
+        """Facing tracks stitched where a successor is spatially continuous and unique."""
+        if self._chains_cache is not None:
+            return self._chains_cache
+        items = [(key, track) for key, track in self.tracks["facing"].items() if track.boxes]
+        options = {
+            a_key: [b_key for b_key, b in items if b_key != a_key and self._continues(a, b)]
+            for a_key, a in items
+        }
+        claimed: dict[str, list[str]] = {}
+        for a_key, successors in options.items():
+            for b_key in successors:
+                claimed.setdefault(b_key, []).append(a_key)
+        successor = {
+            a_key: successors[0]
+            for a_key, successors in options.items()
+            if len(successors) == 1 and claimed[successors[0]] == [a_key]
+        }
+        chains = {}
+        for key, _ in items:
+            if key in successor.values():
+                continue
+            chain = [key]
+            while chain[-1] in successor and successor[chain[-1]] not in chain:
+                chain.append(successor[chain[-1]])
+            for member in chain:
+                chains[member] = chain
+        self._chains_cache = chains
+        return chains
+
+    def _facing_people(self, at, gap) -> list[dict]:
+        chains, people = self._chains(), {}
+        for key, track in self.tracks["facing"].items():
+            state = self._state(track, at, gap)
+            if state is None:
+                continue
+            chain = chains[key]
+            person = people.setdefault(
+                chain[0], {"tracks": list(chain), "state": state, "moving": False}
+            )
+            if abs(state[3]) < abs(person["state"][3]):
+                person["state"] = state
+            person["moving"] = person["moving"] or self._moving(track, at)
+        return list(people.values())
+
+    def _zone_decide(self, crossing, gap) -> dict:
+        at, direction = crossing.captured_at, crossing.direction
+        side_sole = not any(
+            key != crossing.side_track_id and track.first_seen - gap <= at <= track.last_seen + gap
+            for key, track in self.tracks["side"].items()
+        )
+        people = self._facing_people(at, gap)
+        movers = [person for person in people if person["moving"]]
+        record = {
+            "mode": self.zone_mode, "direction": direction, "side_sole": side_sole,
+            "candidates": len(people), "moving_candidates": len(movers), "sample": False,
+        }
+        if not self.zone.ready(direction):
+            record["decision"] = "zone_learning"
+        elif not movers:
+            record["decision"] = "no_moving_facing_track"
+        else:
+            scored = sorted(
+                ((self.zone.distance(direction, person["state"]), index)
+                 for index, person in enumerate(movers))
+            )
+            distance, best = scored[0][0], movers[scored[0][1]]
+            second = scored[1][0] if len(scored) > 1 else None
+            record.update(
+                distance=round(distance, 3),
+                second_distance=None if second is None else round(second, 3),
+                facing_tracks=list(best["tracks"]),
+            )
+            rival = any(
+                key in best["tracks"]
+                and owner != crossing.side_track_id
+                and abs(claimed_at - at) <= 3.0
+                for key, (owner, claimed_at) in self._zone_claims.items()
+            )
+            if distance > GATE:
+                record["decision"] = "no_facing_track_in_zone"
+            elif second is not None and second - distance < self.zone_margin:
+                record["decision"] = "ambiguous_zone_match"
+            elif rival:
+                record["decision"] = "facing_already_assigned"
+            else:
+                record["decision"] = "linked"
+                for key in best["tracks"]:
+                    self._zone_claims[key] = (crossing.side_track_id, at)
+                while len(self._zone_claims) > self.max_pending:
+                    self._zone_claims.popitem(last=False)
+        # Learn only from the unambiguous case: one person in each view, moving.
+        if side_sole and len(people) == 1 and movers:
+            state = movers[0]["state"]
+            record["sample"] = self.zone.add(direction, state)
+            record["state"] = [round(float(value), 4) for value in state]
+        decisions = self.zone_stats["decisions"]
+        decisions[record["decision"]] = decisions.get(record["decision"], 0) + 1
+        return record
+
+    def _resolve_zone(self, event_id, crossing, now) -> AssociationProposal | None:
+        gap = 1.0 if self.max_track_gap_seconds is None else self.max_track_gap_seconds
+        previous = {
+            key: value for key, value in self.last_decisions.get(event_id, {}).items()
+            if key not in {"event_id", "side_track_id", "crossing_at", "decision_at", "zone"}
+        }
+        reason = previous.pop("reason", "awaiting_zone_window")
+        if crossing.zone is None:
+            # Wait until every facing track that starts just after the crossing is in.
+            if now - crossing.captured_at < gap + 0.25:
+                return None
+            crossing.zone = self._zone_decide(crossing, gap)
+            if crossing.zone["decision"] == "linked":
+                # A face may appear anywhere along the facing track, not only here.
+                crossing.deadline = crossing.captured_at + self.retention_seconds
+            self._note(event_id, crossing, now, reason, **previous)
+        record = crossing.zone
+        if record["decision"] != "linked" or "identity" in record or crossing.conflict:
+            return None
+        chains, facing = self._chains(), self.tracks["facing"]
+        for key in list(record["facing_tracks"]):
+            for member in chains.get(key, ()):
+                if member not in record["facing_tracks"]:
+                    record["facing_tracks"].append(member)
+        for key in record["facing_tracks"]:
+            track = facing.get(key)
+            if track is None:
+                continue
+            crossing.conflict = crossing.conflict or track.identity_conflict
+            if track.identity_id:
+                crossing.identities[track.identity_id] = track.identity_source
+        applied = self.zone_mode == "on" and crossing.known_identity is None
+        if crossing.conflict or len(crossing.identities) > 1:
+            crossing.conflict = True
+            record["identity_conflict"] = True
+            self._note(
+                event_id, crossing, now,
+                "face_identity_conflict" if applied else reason, **previous,
+            )
+            return None
+        if not crossing.identities:
+            if applied and reason != "face_identity_pending":
+                self._note(event_id, crossing, now, "face_identity_pending", **previous)
+            return None
+        (identity_id, source), = crossing.identities.items()
+        record["identity"] = identity_id
+        if crossing.known_identity is not None:
+            agrees = identity_id == crossing.known_identity
+            record["label_agrees"] = agrees
+            self.zone_stats["label_agree" if agrees else "label_disagree"] += 1
+        if not applied:
+            self._note(event_id, crossing, now, reason, **previous)
+            return None
+        self._note(event_id, crossing, now, "linked", **previous)
+        self.terminal.append(dict(self.last_decisions[event_id]))
+        self.pending.pop(event_id)
+        self._emitted[event_id] = None
+        while len(self._emitted) > self.max_pending * 2:
+            self._emitted.popitem(last=False)
+        self.linked_count += 1
+        return AssociationProposal(
+            event_id,
+            crossing.side_track_id,
+            record["facing_tracks"][0],
+            identity_id,
+            float(previous.get("appearance_score") or 0.0),
+            float(
+                self.zone_margin if record["second_distance"] is None
+                else record["second_distance"] - record["distance"]
+            ),
+            ("crossing_zone_position", "bounded_capture_time", source),
+            tuple(record["facing_tracks"]),
+            "cross_view_position",
+        )
+
     def resolve_pending(self, now: float) -> list[AssociationProposal]:
         if not isfinite(now):
             return []
@@ -371,6 +673,7 @@ class LiveAssociationCoordinator:
 
     def _drop_track(self, view: str, track_id: str) -> None:
         self.tracks[view].pop(track_id, None)
+        self._chains_cache = None
         if view == "side":
             paired = self._side_to_facing.pop(track_id, None)
             if paired is not None:
@@ -387,14 +690,23 @@ class LiveAssociationCoordinator:
                 if now - track.last_seen > self.retention_seconds:
                     self._drop_track(view, track_id)
         for event_id, crossing in list(self.pending.items()):
-            if now - crossing.captured_at > self.max_transition_seconds:
+            if now > crossing.deadline:
                 self.pending.pop(event_id)
-                self.expired_count += 1
+                labelled = crossing.known_identity is not None
+                self.expired_count += not labelled
                 previous = self.last_decisions.get(event_id, {})
-                self._note(event_id, crossing, now, "expired_unresolved", **{
-                    key: value for key, value in previous.items()
-                    if key not in {"event_id", "side_track_id", "crossing_at", "decision_at", "reason"}
-                }, last_reject_reason=previous.get("reason"))
+                self._note(
+                    event_id, crossing, now,
+                    "labelled_check" if labelled else "expired_unresolved",
+                    **{
+                        key: value for key, value in previous.items()
+                        if key not in {
+                            "event_id", "side_track_id", "crossing_at", "decision_at",
+                            "reason", "zone",
+                        }
+                    },
+                    last_reject_reason=previous.get("reason"),
+                )
                 self.terminal.append(dict(self.last_decisions[event_id]))
 
     def reset(self) -> None:
@@ -405,6 +717,8 @@ class LiveAssociationCoordinator:
         self._emitted.clear()
         self._side_to_facing.clear()
         self._facing_to_side.clear()
+        self._zone_claims.clear()
+        self._chains_cache = None
         self.linked_count = self.expired_count = 0
         self.last_decisions.clear()
         self.terminal.clear()
@@ -431,4 +745,7 @@ class LiveAssociationCoordinator:
             "max_track_gap_seconds": self.max_track_gap_seconds,
             "sole_candidate_threshold": self.sole_candidate_threshold,
             "last_decisions": [dict(value) for value in self.last_decisions.values()],
+            "zone": None
+            if self.zone_mode == "off"
+            else {"mode": self.zone_mode, **self.zone.summary(), **self.zone_stats},
         }

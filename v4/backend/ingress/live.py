@@ -164,6 +164,9 @@ class CameraConfig:
     association_min_samples: int = 2
     association_overlap_seconds: float | None = None
     association_sole_candidate_threshold: float | None = None
+    # Position evidence for the cross-camera link: "off", "shadow" or "on".
+    association_zone: str = "off"
+    association_zone_min_samples: int = 20
 
     @property
     def url(self) -> str:
@@ -408,9 +411,15 @@ class LiveSession:
                 ),
             )
             recount(db, self.event_id)
-        if not identity_id and hasattr(self, "association"):
+        if hasattr(self, "association"):
+            # A crossing that already has a face is registered only as a labelled
+            # check of the position evidence; the coordinator never links it.
             self.association.register_crossing(
-                passage_id, track_id, captured_at if captured_at is not None else time.monotonic()
+                passage_id,
+                track_id,
+                captured_at if captured_at is not None else time.monotonic(),
+                direction=direction,
+                known_identity=identity_id,
             )
 
     def _resolve_cross_view(self, now):
@@ -434,9 +443,10 @@ class LiveSession:
                 evidence = json.loads(row["evidence"])
                 evidence.update(
                     identity_resolution=True,
-                    identity_basis="cross_view_appearance",
+                    identity_basis=proposal.basis,
                     cross_view={
                         "facing_track": proposal.facing_track_id,
+                        "facing_tracks": list(proposal.facing_tracks),
                         "side_track": proposal.side_track_id,
                         "appearance_score": proposal.appearance_score,
                         "margin": proposal.margin,
@@ -452,14 +462,21 @@ class LiveSession:
         # Keep the final reason and scores for every crossing that was not
         # linked. Thresholds can then be calibrated from real decisions, and the
         # global resolver can use an appearance match that only lacked a face.
-        rejected = [
-            decision
-            for decision in self.association.drain_terminal()
-            if decision["reason"] == "expired_unresolved"
-        ]
-        if rejected:
+        terminal = self.association.drain_terminal()
+        rejected = [d for d in terminal if d["reason"] == "expired_unresolved"]
+        zoned = [d for d in terminal if d.get("zone")]
+        if rejected or zoned:
             facing_camera = getattr(self, "facing", self).camera_id
             with self.store.transaction() as db:
+                # What the position evidence decided, kept for every crossing: the
+                # resolver reads the facing tracks, and the samples retrain the zone.
+                for decision in zoned:
+                    record = {**decision["zone"], "facing_camera_id": facing_camera}
+                    db.execute(
+                        "UPDATE passages SET evidence=json_set(evidence,"
+                        "'$.cross_view_zone',json(?)) WHERE id=? AND event_id=?",
+                        (json.dumps(record, default=float), decision["event_id"], self.event_id),
+                    )
                 for decision in rejected:
                     record = {
                         key: decision.get(key)
@@ -471,6 +488,14 @@ class LiveSession:
                         )
                     }
                     record["facing_camera_id"] = facing_camera
+                    # Seconds relative to the crossing; a track that starts after it
+                    # or ends before it was not visible at the crossing instant.
+                    for key in ("side_first_seen", "side_last_seen",
+                                "facing_first_seen", "facing_last_seen"):
+                        if decision.get(key) is not None:
+                            record[key.replace("_seen", "_offset")] = round(
+                                decision[key] - decision["crossing_at"], 3
+                            )
                     db.execute(
                         "UPDATE passages SET evidence=json_set(evidence,"
                         "'$.cross_view_rejected',json(?)) WHERE id=? AND event_id=?",
@@ -900,6 +925,10 @@ class LiveSession:
                                 and face.identity_id
                                 and face.state in {"new", "matched", "tracked"}
                                 else None,
+                                box=(
+                                    track.bbox[0] / width, track.bbox[1] / height,
+                                    track.bbox[2] / width, track.bbox[3] / height,
+                                ),
                             )
                         if self.config.count_passages:
                             cv2.circle(display, (int(x), int(y)), 5, (60, 140, 240), -1)

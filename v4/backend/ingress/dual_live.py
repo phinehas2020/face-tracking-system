@@ -1,5 +1,6 @@
 """Two live views: side confirms passages; facing supplies shared face templates."""
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -32,6 +33,8 @@ class DualLiveSession(LiveSession):
             min_samples=self.config.association_min_samples,
             max_track_gap_seconds=self.config.association_overlap_seconds,
             sole_candidate_threshold=self.config.association_sole_candidate_threshold,
+            zone_mode=self.config.association_zone,
+            zone_min_samples=self.config.association_zone_min_samples,
         )
         self.association_view = "side"
         self.facing.association_view = "facing"
@@ -45,6 +48,8 @@ class DualLiveSession(LiveSession):
             self.facing.face_registry.confirmed_variants = self.face_registry.confirmed_variants
             self.facing.face_previews = self.face_previews
             self.facing.face_preview_quality = self.face_preview_quality
+            if self.association.zone_mode != "off":
+                self._load_zone_samples()
             with self.store.transaction() as db:
                 db.execute(
                     "UPDATE cameras SET role='face_identity', "
@@ -57,6 +62,19 @@ class DualLiveSession(LiveSession):
 
         self._start_workers()
         self.facing._start_workers()
+
+    def _load_zone_samples(self):
+        """Refit the crossing zone from the most recent stored samples."""
+        with self.store.connect() as db:
+            rows = db.execute(
+                "SELECT json_extract(evidence,'$.cross_view_zone') AS zone FROM passages "
+                "WHERE event_id=? AND json_extract(evidence,'$.cross_view_zone.sample')=1 "
+                "ORDER BY observed_at DESC LIMIT 600",
+                (self.event_id,),
+            ).fetchall()
+        for row in reversed(rows):
+            record = json.loads(row["zone"])
+            self.association.zone.add(record.get("direction", "any"), record.get("state"))
 
     def stop(self):
         self.facing.stop_event.set()

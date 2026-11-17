@@ -255,6 +255,11 @@ view recognizes faces without a counting line. Both views share face templates
 and previews, while track state remains separate. Crossings with no accepted
 face evidence remain unresolved; timestamps alone do not establish identity.
 
+`"association_zone"` adds position evidence to the link between the two views:
+`"off"` (default), `"shadow"` (learn, decide and record on every crossing, but
+assign nothing) or `"on"`. It needs `association_overlap_seconds`. See
+`docs/cross-view-position-2026-11-17.md`.
+
 RTSP decoding runs in separate processes with credentials supplied through
 stdin. A decoder that stops producing frames for ten seconds is replaced;
 reconnection resets crossing state to avoid counting a jump across the line.

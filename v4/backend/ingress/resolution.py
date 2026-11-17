@@ -257,7 +257,8 @@ def resolve(
         ).fetchall()
         passages = db.execute(
             "SELECT id,camera_id,track_id,direction,identity_id,"
-            "json_extract(evidence,'$.cross_view_rejected') AS rejected "
+            "json_extract(evidence,'$.cross_view_rejected') AS rejected,"
+            "json_extract(evidence,'$.cross_view_zone') AS zone "
             "FROM passages WHERE event_id=?",
             (event_id,),
         ).fetchall()
@@ -541,6 +542,20 @@ def resolve(
             group = f"identity:{row['identity_id']}"
         else:
             group = group_of_ref.get(tracklet_ref.get((row["camera_id"], row["track_id"])))
+        zone = json.loads(row["zone"]) if group is None and row["zone"] else None
+        if zone and zone.get("mode") == "on" and zone.get("decision") == "linked":
+            # Position evidence put this crossing on a facing person, possibly
+            # tracked in several pieces. Use their stored faces if they agree.
+            found = {
+                cluster_of_group[group_index[linked]]
+                for linked in (
+                    group_of_ref.get(tracklet_ref.get((zone.get("facing_camera_id"), key)))
+                    for key in zone.get("facing_tracks", ())
+                )
+                if linked is not None
+            }
+            found = {position for position in found if cluster_rows[position]["established"]}
+            return found.pop() if len(found) == 1 else None
         if group is None and row["rejected"]:
             # The online cross-view matcher accepted this body's appearance and
             # only lacked a face identity. Use that facing track's stored faces.
