@@ -26,6 +26,8 @@ def _settings(data_root: str | None = None) -> Settings:
         demo_tick_seconds=base.demo_tick_seconds,
         allowed_origins=base.allowed_origins,
         web_dist=base.web_dist,
+        live_camera_file=base.live_camera_file,
+        live_model_path=base.live_model_path,
     )
 
 
@@ -54,17 +56,40 @@ def main() -> None:
     train.add_argument("--labels", required=True, help="CSV exported from the rehearsal lab")
     train.add_argument("--output", required=True)
 
+    resolve_parser = subparsers.add_parser(
+        "resolve", help="Re-resolve identities for a whole event from stored face evidence"
+    )
+    resolve_parser.add_argument("event_id")
+    resolve_parser.add_argument(
+        "--apply", action="store_true", help="Record links and the review queue (default: report)"
+    )
+    resolve_parser.add_argument("--actor", default="cli")
+
+    calibrate = subparsers.add_parser(
+        "calibrate-resolution", help="Fit the resolver's score calibration from reviewed links"
+    )
+    calibrate.add_argument("event_id")
+    calibrate.add_argument(
+        "--impostor-scores",
+        help="Fit without human labels: a tools/score_survey.py report of same-frame "
+        "(different-person) scores, plus same-tracklet pairs from this event",
+    )
+
     args = parser.parse_args()
     settings = _settings(args.data_root)
     store = EventStore(settings.data_root)
     store.initialize()
 
     if args.command == "serve":
+        host = args.host or settings.host
+        if settings.live_camera_file and host not in {"127.0.0.1", "localhost", "::1"}:
+            parser.error("The live camera test must bind to loopback")
         uvicorn.run(
             create_app(settings),
-            host=args.host or settings.host,
+            host=host,
             port=args.port or settings.port,
             reload=False,
+            access_log=not bool(settings.live_camera_file),
         )
     elif args.command == "seed-demo":
         print(seed_demo(store))
@@ -80,6 +105,28 @@ def main() -> None:
         print(args.output)
     elif args.command == "purge-plan":
         print(json.dumps(store.purge_plan(args.event_id), indent=2))
+    elif args.command == "resolve":
+        from . import resolution
+
+        result = resolution.resolve(store, args.event_id)
+        if args.apply:
+            result.report["applied"] = resolution.apply(store, result, args.actor)
+        print(json.dumps(result.report, indent=2))
+    elif args.command == "calibrate-resolution":
+        from . import resolution
+
+        if args.impostor_scores:
+            scores = json.loads(Path(args.impostor_scores).read_text())["scores"]
+            fitted = resolution.fit_calibration(
+                *resolution.constraint_pairs(store, args.event_id, scores), method="constraints"
+            )
+        else:
+            fitted = resolution.fit_calibration(*resolution.labelled_pairs(store, args.event_id))
+        fitted.save(resolution.calibration_path(store))
+        print(json.dumps({"slope": fitted.slope, "intercept": fitted.intercept,
+                          "method": fitted.method, "pairs": fitted.labelled_pairs,
+                          "even_odds_at_similarity": round(-fitted.intercept / fitted.slope, 4)},
+                         indent=2))
     elif args.command == "train-fusion":
         pairs = LabeledPair.load_csv(Path(args.labels))
         result = train_fusion_model(pairs)

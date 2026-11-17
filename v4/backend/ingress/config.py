@@ -21,6 +21,8 @@ class Settings:
     demo_tick_seconds: float
     allowed_origins: tuple[str, ...]
     web_dist: Path
+    live_camera_file: Path | None = None
+    live_model_path: str = "yolo26s.pt"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -39,6 +41,14 @@ class Settings:
             web_dist=Path(
                 os.getenv("INGRESS_WEB_DIST", project_root / "web" / "dist" / "client")
             ).resolve(),
+            live_camera_file=(
+                Path(os.environ["INGRESS_LIVE_CAMERA_FILE"]).resolve()
+                if os.getenv("INGRESS_LIVE_CAMERA_FILE")
+                else None
+            ),
+            live_model_path=os.getenv(
+                "INGRESS_LIVE_MODEL", str(project_root / "models" / "yolo26s.pt")
+            ),
         )
 
 

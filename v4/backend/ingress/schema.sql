@@ -65,6 +65,57 @@ CREATE TABLE IF NOT EXISTS passages (
     UNIQUE(event_id, camera_id, track_id, observed_at)
 );
 
+CREATE TABLE IF NOT EXISTS face_templates (
+    identity_id TEXT PRIMARY KEY REFERENCES identities(id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    label TEXT NOT NULL,
+    quality REAL NOT NULL,
+    samples INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS face_previews (
+    identity_id TEXT PRIMARY KEY REFERENCES face_templates(identity_id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    jpeg BLOB NOT NULL,
+    quality REAL NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS confirmed_face_variants (
+    source_identity_id TEXT PRIMARY KEY,
+    identity_id TEXT NOT NULL REFERENCES face_templates(identity_id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    confirmed_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- Face evidence for every tracklet, including those that never enrolled online.
+-- The global resolver re-reads this; it is the only place unresolved faces survive.
+CREATE TABLE IF NOT EXISTS tracklet_evidence (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    camera_id TEXT NOT NULL,
+    track_key TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('body', 'face')),
+    model TEXT NOT NULL,
+    first_observed_at TEXT NOT NULL,
+    last_observed_at TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    embeddings BLOB NOT NULL,
+    qualities BLOB NOT NULL,
+    online_identity_id TEXT,
+    online_state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(event_id, camera_id, track_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tracklet_evidence_event ON tracklet_evidence(event_id);
+
 CREATE TABLE IF NOT EXISTS identity_links (
     id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,

@@ -10,8 +10,16 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 ## Durable product decisions
 
+- Live camera operation is facial-recognition based: face templates identify new and returning visitors; person tracking connects observations, and line crossing confirms entry. Keep recognized faces, unique entrants, repeat entries, and unresolved entries distinct. A line-crossing-only counter does not fulfill this product's core purpose.
+
 - The selected visual target is **Event Time Machine**: a dense, desktop-first technical rehearsal console on a warm neutral canvas with dark camera wells, IBM Plex typography, orange time/navigation accents, teal verified-state accents, and violet comparison data.
 - The primary screen must keep synchronized Lane A, Lane B, and Wide evidence visible together with model-run comparison, an actionable disagreement queue, a dense event timeline, camera health, and persistent replay controls.
 - This is an event operations product, not a generic security dashboard. Language centers passages, unique attendees, identity links, rehearsal, camera topology, and reversible operator decisions.
 - The core behavior works with the API and degrades to deterministic fixtures for visual review. Case decisions, replay controls, camera selection, overlays, model selection, navigation, and guarded lifecycle controls stay interactive.
 - Use Phosphor for icons, Recharts for data visualization, and generated camera imagery from `public/assets/cameras`. Do not introduce emoji, inline SVG, decorative gradients, or generic placeholders.
+
+- A station uses front and side cameras together on a shared timeline. Show both views together; count passages in one designated view and expose cross-view identity evidence plus a same-frame single-view control. Sequential single-camera excerpts do not validate the paired architecture.
+
+- Live front/side station: facing camera recognizes faces without a counting line; side camera alone confirms passages. Show both live views and their freshness together. Do not infer cross-camera identity from timestamps alone.
+
+- Visitor thumbnails are saved locally with the event, survive service restarts, and follow event purge. Show "Photo pending" when no accepted image has been saved yet.

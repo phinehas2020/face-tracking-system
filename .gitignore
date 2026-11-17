@@ -10,6 +10,8 @@ dist/
 .pytest_cache/
 .ruff_cache/
 .env
+v4/data/
+v4/models/
 
 # OS
 .DS_Store

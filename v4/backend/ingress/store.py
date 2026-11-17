@@ -230,7 +230,10 @@ class EventStore:
                 """,
                 (after_status, actor, utc_now(), candidate_id, event_id),
             )
-            if before["status"] == "review" and after_status != "review":
+            # Resolver links are re-derived from evidence; only the fixture's
+            # queue adjusts the stored counters directly.
+            derived = json.loads(before["evidence"] or "{}").get("source") == "global_resolver"
+            if before["status"] == "review" and after_status != "review" and not derived:
                 unique_delta = -1 if after_status == "confirmed_same" else 0
                 connection.execute(
                     """
@@ -265,6 +268,128 @@ class EventStore:
         result["evidence"] = json.loads(result["evidence"] or "{}")
         return result
 
+    def merge_confirmed_visitors(self, event_id, source_id, target_id, actor):
+        """Apply an explicit human identity decision, retaining both reference views."""
+        from .face_registry import recount
+
+        if not actor or source_id == target_id:
+            raise ValueError("A distinct source, target, and confirming actor are required")
+        with self.transaction() as db:
+            source = db.execute(
+                "SELECT * FROM face_templates WHERE event_id=? AND identity_id=?",
+                (event_id, source_id),
+            ).fetchone()
+            target = db.execute(
+                "SELECT * FROM face_templates WHERE event_id=? AND identity_id=?",
+                (event_id, target_id),
+            ).fetchone()
+            if source is None or target is None:
+                raise ValueError("Both visitor profiles must belong to the selected event")
+            if source["model"] != target["model"]:
+                raise ValueError("Cannot combine references from different recognition models")
+            db.execute(
+                "INSERT INTO confirmed_face_variants "
+                "(source_identity_id,identity_id,event_id,model,embedding,confirmed_by,created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    source_id,
+                    target_id,
+                    event_id,
+                    source["model"],
+                    source["embedding"],
+                    actor,
+                    utc_now(),
+                ),
+            )
+            db.execute(
+                "UPDATE confirmed_face_variants SET identity_id=? "
+                "WHERE identity_id=? AND event_id=?",
+                (target_id, source_id, event_id),
+            )
+            moved = db.execute(
+                "UPDATE passages SET identity_id=?, "
+                "evidence=json_set(evidence,'$.human_confirmed_merge',?) "
+                "WHERE event_id=? AND identity_id=?",
+                (target_id, source_id, event_id, source_id),
+            ).rowcount
+            db.execute(
+                "UPDATE tracklet_evidence SET online_identity_id=? "
+                "WHERE event_id=? AND online_identity_id=?",
+                (target_id, event_id, source_id),
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO face_previews "
+                "(identity_id,event_id,jpeg,quality,updated_at) "
+                "SELECT ?,event_id,jpeg,quality,updated_at FROM face_previews "
+                "WHERE identity_id=? AND event_id=?",
+                (target_id, source_id, event_id),
+            )
+            db.execute("DELETE FROM identities WHERE id=? AND event_id=?", (source_id, event_id))
+            db.execute(
+                "UPDATE identities SET prototype_count=1+(SELECT COUNT(*) "
+                "FROM confirmed_face_variants "
+                "WHERE identity_id=?),updated_at=? WHERE id=?",
+                (target_id, utc_now(), target_id),
+            )
+            recount(db, event_id)
+            result = {
+                "source": source["label"],
+                "target": target["label"],
+                "moved_passages": moved,
+                "confirmation": "human",
+                "source_id": source_id,
+                "target_id": target_id,
+            }
+            db.execute(
+                "INSERT INTO audit_log "
+                "(event_id,action,actor,target_type,target_id,before_state,after_state,created_at) "
+                "VALUES (?,'confirmed_visitor_merge',?,'identity',?,?,?,?)",
+                (
+                    event_id,
+                    actor,
+                    target_id,
+                    json.dumps({"source": source["label"], "target": target["label"]}),
+                    json.dumps(result),
+                    utc_now(),
+                ),
+            )
+            return result
+
+    def save_face_preview(
+        self, event_id: str, identity_id: str, jpeg: bytes, quality: float
+    ) -> bool:
+        """Persist an accepted face crop with its event; retain the best available image."""
+        import math
+
+        if not (jpeg.startswith(b"\xff\xd8") and jpeg.endswith(b"\xff\xd9")) or len(jpeg) > 262144:
+            raise ValueError("Expected a small JPEG face preview")
+        if not math.isfinite(quality) or not 0 <= quality <= 1:
+            raise ValueError("Invalid preview quality")
+        with self.transaction() as db:
+            if not db.execute(
+                "SELECT 1 FROM face_templates WHERE identity_id=? AND event_id=?",
+                (identity_id, event_id),
+            ).fetchone():
+                raise ValueError("Face identity does not belong to this event")
+            result = db.execute(
+                "INSERT INTO face_previews (identity_id,event_id,jpeg,quality,updated_at) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(identity_id) DO UPDATE SET "
+                "jpeg=excluded.jpeg,quality=excluded.quality,updated_at=excluded.updated_at "
+                "WHERE excluded.quality > face_previews.quality + 0.02",
+                (identity_id, event_id, jpeg, quality, utc_now()),
+            )
+            return result.rowcount > 0
+
+    def load_face_previews(self, event_id: str) -> tuple[dict[str, bytes], dict[str, float]]:
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT identity_id,jpeg,quality FROM face_previews WHERE event_id=?", (event_id,)
+            ).fetchall()
+        return (
+            {row["identity_id"]: bytes(row["jpeg"]) for row in rows},
+            {row["identity_id"]: row["quality"] for row in rows},
+        )
+
     def purge_plan(self, event_id: str) -> dict[str, Any]:
         self._assert_event(event_id)
         with self.connect() as connection:
@@ -272,6 +397,10 @@ class EventStore:
             for table in (
                 "cameras",
                 "identities",
+                "face_templates",
+                "face_previews",
+                "confirmed_face_variants",
+                "tracklet_evidence",
                 "passages",
                 "identity_links",
                 "replay_runs",
