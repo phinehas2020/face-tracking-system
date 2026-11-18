@@ -58,7 +58,8 @@ Wilson score intervals (Wilson, JASA 1927).
 ## The first thing it found: the station had stopped counting
 
 On the evening of 2026-11-17 the booth was switched to the `crowd-consensus`
-tracker with the RF-DETR second look and a 640 px detector (commit b1ded1b).
+tracker with the RF-DETR second look and a 640 px detector (commit b1ded1b),
+and its detector model from `yolo26n` to `yolo26m` in the service definition.
 Counted passages between 13:00 and 18:00 UTC, the booth's morning:
 
 | Day | Passages counted |
@@ -72,6 +73,7 @@ The first hour of activity windows shows why. Read by eye from the strips:
 |---|---:|---:|
 | Crowd-consensus, second look on (17:18 to 17:28 UTC) | 8 | 0 |
 | Crowd-consensus, second look off (17:30 to 17:32 UTC) | 2 | 1 |
+| `live_tracker.yaml`, 960 px, still `yolo26m` (17:41 to 18:16 UTC) | 2 | 0 |
 
 - With the second look on, the side camera's detect-and-track step averaged
   328 ms a frame while a person was in view, and a track was present in only 26
@@ -79,17 +81,26 @@ The first hour of activity windows shows why. Read by eye from the strips:
   300 ms, inside the counting loop whenever the gate strips move.
 - With it off the same step averaged 131 ms and one of two crossings was
   counted; the miss was a person carrying a box on one shoulder.
-- At 17:41 UTC the booth was returned to the tracker file and 960 px detector it
-  had before that change (`live_tracker.yaml`, no second look), keeping the
-  crossing zone and activity capture on. The earlier settings and status
-  snapshots are in `deployment/activity-20261118/`.
-- **The restored configuration is not yet shown to count.** Nobody had walked
-  through in the first ten minutes after the change. Ten crossings read by one
-  person from strips are enough to see the collapse, not to rank the trackers.
-- The 12 windows saved before 17:41 UTC were cut with an earlier version of the
-  window boundaries, where consecutive strips overlapped. Leave them out:
-  open the review page with `?since=2026-11-18T17:41`, and pass the same value
-  to `/api/live/scorecard` or `ingress scorecard --since`.
+- At 17:41 UTC the tracker file and 960 px detector from before that change
+  were restored (`live_tracker.yaml`, no second look). That was not enough:
+  with `yolo26m` at 960 px the detect-and-track step took 212 ms a frame with a
+  person in view, about 3 frames a second, and two more crossings were missed.
+- At 18:16 UTC the model was set back to `yolo26n`. In the next 23 minutes all
+  five activity windows carried a counted passage (3 in, 2 out), at 6.1 frames a
+  second with a person in view. **Those five were not checked against the
+  strips**, so this shows counting resumed, not that it is accurate.
+- The crossing zone and activity capture stayed on throughout. Earlier settings,
+  the earlier service definition and status snapshots are in
+  `deployment/activity-20261118/`.
+- Crossings above were read by one person from strips: enough to see the
+  collapse, not to rank trackers or models.
+- Label from the restored setup onward: open the review page with
+  `?since=2026-11-18T18:17`, and pass the same value to `/api/live/scorecard` or
+  `ingress scorecard --since`. Earlier windows belong to other configurations,
+  and the first 12 were cut with overlapping strips.
+- The side camera also sees people inside the office through its doorway and
+  the interior window. Three of eight windows in one stretch were that, with no
+  crossing.
 
 ## Measurements on the booth Mac, 2026-11-18
 
@@ -118,8 +129,8 @@ Read from the running station before the first deploy unless noted.
 - **Where a frame's time goes.** With the 640 px detector and nobody in view, a
   frame took about 48 ms of work and the loop then waited about 80 ms before the
   next frame, although the cameras deliver 15 to 20 a second. The cause of that
-  wait was not established. With the restored 960 px detector the same step
-  takes about 160 ms and the wait is 1 ms, about 6 frames a second per camera.
+  wait was not established. `yolo26m` at 960 px took about 160 ms with a 1 ms
+  wait; `yolo26n` at 960 px takes 32 ms on the side camera with nobody in view.
 - **Body appearance is expensive when people are present.** OSNet added 22 to 73
   ms a frame across three short samples (26 to 259 frames).
 - **A different detector runtime is not a shortcut.** YOLO26m through ONNX
