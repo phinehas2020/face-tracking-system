@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from .accelerator import mps_guard, serialized_mps
+from .accelerator import TRACKER_LOCK, mps_guard, serialized_mps
 from .contracts import BBox, Detection, FramePacket, Track
 
 
@@ -151,7 +151,8 @@ class UltralyticsPersonTracker(_PersonRuntime):
         with mps_guard(self.selected_device):
             self.model: Any = YOLO(model_path)
         self.confidence = confidence
-        aliases = {"bytetrack": "bytetrack.yaml", "tracktrack": "tracktrack.yaml"}
+        names = ("bytetrack", "tracktrack", "ocsort", "fasttrack")
+        aliases = {name: f"{name}.yaml" for name in names}
         self.tracker = aliases.get(tracker, tracker) or str(
             Path(__file__).with_name("crowd_tracker.yaml")
         )
@@ -161,22 +162,24 @@ class UltralyticsPersonTracker(_PersonRuntime):
     def reset(self) -> None:
         """Discard identities when the source reconnects."""
         predictor = getattr(self.model, "predictor", None)
-        for tracker in getattr(predictor, "trackers", []):
-            tracker.reset()
+        with TRACKER_LOCK:
+            for tracker in getattr(predictor, "trackers", []):
+                tracker.reset()
         self._ages.clear()
 
     @serialized_mps("selected_device")
     def track(self, frame: FramePacket) -> list[Track]:
         image, origin = self._image_roi(frame.image_bgr)
-        result = self._infer(
-            "track",
-            image,
-            classes=[0],
-            conf=self.confidence,
-            tracker=self.tracker,
-            persist=True,
-            verbose=False,
-        )
+        with TRACKER_LOCK:
+            result = self._infer(
+                "track",
+                image,
+                classes=[0],
+                conf=self.confidence,
+                tracker=self.tracker,
+                persist=True,
+                verbose=False,
+            )
         if result.boxes is None or result.boxes.id is None:
             return []
         output: list[Track] = []

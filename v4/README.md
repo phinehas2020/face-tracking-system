@@ -146,6 +146,12 @@ Stop with Ctrl+C. Stop the live process before using the existing event purge AP
 The live API exposes `/api/live/status`, `/api/live/frame.jpg`,
 `PUT /api/live/calibration`, and `POST /api/live/control` with `{"paused": true}`.
 
+## Motion-triggered doorway replay
+
+[See the crowded Fair benchmark](docs/crowded-fair-benchmark.md) for per-person detector comparisons, interrupted-track cases and the optional corroborated handoff replay.
+
+The offline gate audit uses three strips of pixels to identify moments for full-rate detection and shows each window as a photo finish. On the recorded booth walkthrough, adaptive sampling recovered both entries missed by an evenly spaced 498-frame control. [Experiment and reproduction commands](docs/gate-motion-replay.md)
+
 ## Turn last year's video into the advantage
 
 ### Recorded-camera excerpts
@@ -268,3 +274,27 @@ both views are live. On Edith, `com.ingress.single-camera-test` is a login launc
 agent with automatic process restart. Existing event counts and templates are
 preserved. Test an actual enter/leave/re-enter sequence after camera placement
 or side-line calibration changes.
+
+## YOLO26m with a live RF-DETR second look
+
+Set the launch service's `INGRESS_LIVE_MODEL` to an explicit local YOLO26m weights file.
+Set `tracker_name` to `crowd-consensus` on each participating camera. Set the counting
+camera's `second_look_model` to an absolute path to the static RF-DETR-Large 704px ONNX
+export. Produce that export on a development machine with the official RF-DETR package
+and `RFDETRLarge(device="cpu").export(format="onnx", output_dir="models")`.
+The booth uses its existing ONNX Runtime CPU provider for the second look.
+
+YOLO processes each selected live frame. RF-DETR checks the same frame during gate
+motion, crowded scenes, a drop in visible detections, and periodically when the scene
+is quiet. It proposes additional boxes and can strengthen a weak primary observation.
+RF scores below 0.50 require a second observation within 1.2 seconds and retain their
+original score. Each accepted box goes through the normal tracker and crossing
+confirmation. TrackTrack, ByteTrack and OC-SORT share one detector pass for the
+corroborated handoff mode.
+
+Each view reports the detector filename, tracking mode and cumulative corroborated
+handoffs under `runtime` on `/api/live/status`. The counting view also reports RF
+inferences, errors, extra boxes, corroborated low scores and duration of the last
+RF pass. Replay the same path with `tools/benchmark_live_models.py --tracker
+crowd-consensus --second-look-model /path/to/rfdetr-large.onnx` and the standard
+recording, model, timestamp and gate arguments.

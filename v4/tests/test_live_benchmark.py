@@ -218,3 +218,34 @@ def test_sidecar_coverage_requires_one_row_per_encoded_frame(frame_count):
     with pytest.raises(ValueError):
         benchmark.validate_timestamp_coverage([1, 2, 3], frame_count)
     benchmark.validate_timestamp_coverage([1, 2, 3], 3)
+
+
+def test_motion_bursts_use_capture_time_and_ignore_tracker_labels(tmp_path):
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"sample")
+    clock = tmp_path / "side.jsonl"
+    clock.write_text("\n".join(json.dumps({"frame": i, "elapsed_seconds": i / 10 + 2})
+                               for i in range(61)))
+    gate = PassageCalibration()
+    audit = tmp_path / "audit.json"
+    report = {"video_sha256": benchmark._sha256(video),
+              "timestamps_sha256": benchmark._sha256(clock), "gate_endpoints": gate.endpoints,
+              "entry_positive": gate.entry_positive, "source_interval": [2, 8],
+              "windows": [{"start_seconds": 4, "end_seconds": 5, "direction": None}]}
+    audit.write_text(json.dumps(report))
+    frames, stop = benchmark.motion_burst_frames(audit, video, clock, gate, 10)
+    assert frames == set(range(10, 41)) and stop == 61
+    report["source_interval"] = [2, 6]
+    audit.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="cover the evaluation"):
+        benchmark.motion_burst_frames(audit, video, clock, gate, 10)
+    video.write_bytes(b"other")
+    with pytest.raises(ValueError, match="same recording"):
+        benchmark.motion_burst_frames(audit, video, clock, gate, 10)
+
+
+def test_uniform_control_uses_exact_same_budget_and_endpoints():
+    adaptive = benchmark.schedule_frames({5, 6, 7, 8, 90}, 15, 4, False)
+    control = benchmark.schedule_frames({5, 6, 7, 8, 90}, 15, 4, True)
+    assert adaptive == {0, 4, 5, 6, 7, 8, 12}
+    assert control == {0, 2, 4, 6, 8, 10, 12}

@@ -23,6 +23,7 @@ import math
 import os
 import sys
 import time
+from bisect import bisect_left, bisect_right
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -209,12 +210,47 @@ def _validate_tracker(name: str) -> None:
         raise ValueError("This offline comparison requires built-in ReID to be disabled")
 
 
+def motion_burst_frames(audit_path, video, timestamps, calibration, max_seconds):
+    """Schedule full-rate replay around pixel activity, independently of tracker agreement."""
+    audit = json.loads(audit_path.read_text())
+    if (timestamps is None or audit["video_sha256"] != _sha256(video)
+            or audit["timestamps_sha256"] != _sha256(timestamps)
+            or audit["gate_endpoints"] != [list(p) for p in calibration.endpoints]
+            or audit["entry_positive"] != calibration.entry_positive):
+        raise ValueError("Motion audit requires the same recording, capture clock and gate")
+    clock = read_timestamps(timestamps)["timestamps"]
+    stop = bisect_left(clock, max_seconds)
+    source_start, source_end = audit["source_interval"]
+    if not stop or source_start > clock[0] or source_end < clock[stop - 1]:
+        raise ValueError("Motion audit must cover the evaluation interval")
+    frames = set()
+    previous_end = -math.inf
+    for w in audit["windows"]:
+        start, end = w["start_seconds"], w["end_seconds"]
+        if not (clock[0] <= start <= end <= clock[-1] and previous_end < start):
+            raise ValueError("Motion windows must be ordered and within the recording")
+        previous_end = end
+        frames.update(range(bisect_left(clock, start - 1.0), bisect_right(clock, end + 1.0)))
+    return frames, stop
+
+
+def schedule_frames(bursts, total_frames, stride, uniform_control):
+    scheduled = set(range(0, total_frames, stride))
+    scheduled.update(i for i in bursts if i < total_frames)
+    if not uniform_control or len(scheduled) < 2:
+        return scheduled
+    # Span the same first/last observations at exactly the same detector-frame budget.
+    last, intervals = max(scheduled), len(scheduled) - 1
+    return {round(i * last / intervals) for i in range(intervals + 1)}
+
+
 def benchmark_candidate(
     video: Path, model: Path, tracker_name: str, device: str, imgsz: int,
     calibration: PassageCalibration, *, stride: int = 1, max_seconds: float = 60,
     truth: list[dict] | None = None, tolerance: float = .5,
     roi: tuple[float, float, float, float] | None = None, confidence: float = .1,
-    warmup: int = 3, timestamps: Path | None = None,
+    second_look_model: Path | None = None, warmup: int = 3, timestamps: Path | None = None,
+    scheduled_frames: set[int] | None = None,
 ) -> dict:
     if not model.is_file() or not video.is_file():
         raise ValueError("Model and video must already exist as local files; downloads disabled")
@@ -225,11 +261,25 @@ def benchmark_candidate(
     from ingress.vision.adapters import UltralyticsPersonTracker
     from ingress.vision.contracts import FramePacket
 
-    _validate_tracker(tracker_name)
-    provider = UltralyticsPersonTracker(
-        str(model), confidence=confidence, tracker=tracker_name,
-        device=device, imgsz=imgsz, roi=roi,
-    )
+    second_look = None
+    if second_look_model:
+        from ingress.vision.second_look import RFPersonDetector, SecondLook
+
+        if tracker_name != "crowd-consensus":
+            raise ValueError("RF-DETR second look requires crowd-consensus")
+        second_look = SecondLook(RFPersonDetector(second_look_model), second_look_model)
+    if tracker_name in {"crowd-consensus", "crowd-control"}:
+        from ingress.vision.crowd import CrowdPersonTracker
+
+        provider = CrowdPersonTracker(str(model), tracker_name, confidence=confidence,
+                                      device=device, imgsz=imgsz, roi=roi, second_look=second_look)
+        provider.gate = calibration
+    else:
+        _validate_tracker(tracker_name)
+        provider = UltralyticsPersonTracker(
+            str(model), confidence=confidence, tracker=tracker_name,
+            device=device, imgsz=imgsz, roi=roi,
+        )
     capture = cv2.VideoCapture(str(video))
     try:
         if clock is not None:
@@ -278,7 +328,7 @@ def benchmark_candidate(
             if timestamp >= max_seconds:
                 break
             timestamp_modes.add(mode)
-            process = index % stride == 0
+            process = index % stride == 0 if scheduled_frames is None else index in scheduled_frames
             sequence = index
             index += 1
             decode_timing.append(decode_ms)
@@ -330,6 +380,7 @@ def benchmark_candidate(
         "fallback_reason": provider.fallback_reason, "backend_resets": backend_resets,
         "imgsz": imgsz, "roi": roi, "confidence": confidence, "stride": stride,
         "warmup_frames_excluded": warmup, "source_fps": fps if math.isfinite(fps) else None,
+        "second_look": dict(second_look.metrics) if second_look else None,
         "timestamp_modes": sorted(timestamp_modes), "decoded_frames": index,
         "timestamp_sidecar": str(timestamps.resolve()) if timestamps else None,
         "sidecar_clock_modes": clock["clock_modes"] if clock else None,
@@ -363,13 +414,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--model", type=Path, action="append", required=True)
-    parser.add_argument("--tracker", choices=("bytetrack", "tracktrack"), action="append")
+    parser.add_argument("--tracker", choices=("bytetrack", "tracktrack", "ocsort", "fasttrack",
+                                             "crowd-consensus", "crowd-control"), action="append")
     parser.add_argument("--device", choices=("cpu", "mps"), action="append")
     parser.add_argument("--imgsz", type=int, choices=(640, 960), action="append")
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--truth", type=Path)
     parser.add_argument("--timestamps", type=Path,
                         help="Authoritative frame JSONL from capture_validation.py")
+    parser.add_argument("--motion-audit", type=Path,
+                        help="Use full frame rate within one second of gate-motion windows")
+    parser.add_argument("--second-look-model", type=Path, help="Local RF-DETR-Large ONNX export")
+    parser.add_argument("--uniform-control", action="store_true",
+                        help="Spread the motion schedule's detector budget evenly over the clip")
     parser.add_argument("--tolerance", type=float, default=.5)
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--max-seconds", type=float, default=60)
@@ -394,6 +451,14 @@ def main(argv: list[str] | None = None) -> int:
     if values.get("counting_mode", "trajectory") != "trajectory":
         parser.error("Offline live-model comparison requires trajectory counting calibration")
     calibration = PassageCalibration.from_calibration(values)
+    scheduled_frames = None
+    if args.uniform_control and not args.motion_audit:
+        parser.error("--uniform-control needs --motion-audit to determine the frame budget")
+    if args.motion_audit:
+        bursts, total_frames = motion_burst_frames(
+            args.motion_audit, args.video, args.timestamps, calibration, args.max_seconds,
+        )
+        scheduled_frames = schedule_frames(bursts, total_frames, args.stride, args.uniform_control)
     truth = read_truth(args.truth) if args.truth else None
     os.environ["YOLO_AUTOINSTALL"] = "false"
     os.environ["YOLO_OFFLINE"] = "true"
@@ -409,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
                     stride=args.stride, max_seconds=args.max_seconds, truth=truth,
                     tolerance=args.tolerance, roi=tuple(args.roi) if args.roi else None,
                     confidence=args.confidence, warmup=args.warmup, timestamps=args.timestamps,
+                    scheduled_frames=scheduled_frames, second_look_model=args.second_look_model,
                 )
             result["model_sha256"] = _sha256(model)
         except Exception as exc:
@@ -424,6 +490,10 @@ def main(argv: list[str] | None = None) -> int:
               "timing_note": "Warmup excluded. MPS synchronized. Offline throughput is not live "
                              "capture latency; confirmations use source-video time.",
               "truth": str(args.truth.resolve()) if args.truth else None, "results": results}
+    if args.motion_audit:
+        report["motion_audit_sha256"] = _sha256(args.motion_audit)
+        report["motion_burst_padding_seconds"] = 1.0
+        report["sampling_schedule"] = "uniform_control" if args.uniform_control else "motion_bursts"
     serialized = json.dumps(report, indent=2, allow_nan=False) + "\n"
     if args.output:
         args.output.write_text(serialized)

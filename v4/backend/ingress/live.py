@@ -153,6 +153,7 @@ class CameraConfig:
     detector_imgsz: int = 640
     detector_roi: tuple[float, float, float, float] | None = None
     tracker_name: str | None = None
+    second_look_model: str | None = None
     face_provider: str = "cpu"
     face_det_size: int = 1280
     face_person_rois: bool = False
@@ -632,20 +633,35 @@ class LiveSession:
             # applies its own stricter threshold when creating a new person track.
             replay = getattr(self, "is_replay", False)
             advanced = self.config.async_faces and not replay
-            tracker = (
-                UltralyticsPersonTracker(
-                    self.model_path,
-                    device=self.config.detection_device,
-                    imgsz=self.config.detector_imgsz,
-                    roi=self.config.detector_roi,
+            crowd_mode = self.config.tracker_name == "crowd-consensus"
+            second_look = None
+            if self.config.second_look_model:
+                from .vision.second_look import RFPersonDetector, SecondLook
+
+                if not crowd_mode:
+                    raise ValueError("Second look requires crowd-consensus tracking")
+                path = self.config.second_look_model
+                second_look = SecondLook(RFPersonDetector(path), path)
+            if crowd_mode:
+                from .vision.crowd import CrowdPersonTracker
+
+                tracker = CrowdPersonTracker(
+                    self.model_path, "crowd-consensus", confidence=.1,
+                    device=self.config.detection_device, imgsz=self.config.detector_imgsz,
+                    roi=self.config.detector_roi, second_look=second_look,
+                )
+            elif advanced:
+                tracker = UltralyticsPersonTracker(
+                    self.model_path, device=self.config.detection_device,
+                    imgsz=self.config.detector_imgsz, roi=self.config.detector_roi,
                     tracker=self.config.tracker_name,
                 )
-                if advanced
-                else UltralyticsPersonTracker(self.model_path)
-            )
+            else:
+                tracker = UltralyticsPersonTracker(self.model_path)
             self.runtime.update(
                 detector_device=getattr(tracker, "selected_device", "cpu"),
                 tracker=self.config.tracker_name or "bytetrack",
+                detector_model=Path(self.model_path).name,
                 detector_imgsz=self.config.detector_imgsz,
             )
             appearance_encoder = None
@@ -723,6 +739,8 @@ class LiveSession:
                     observed_at or utc_now(),
                     frame,
                 )
+                if second_look:
+                    tracker.gate = self.calibration
                 tracks = [] if paused else tracker.track(packet)
                 frame_height, frame_width = frame.shape[:2]
                 tracks = [
@@ -1032,6 +1050,10 @@ class LiveSession:
                             / max(self._fps_times[-1] - self._fps_times[0], 0.001),
                             1,
                         )
+                    if second_look:
+                        self.runtime["second_look"] = dict(second_look.metrics)
+                    if crowd_mode:
+                        self.runtime["crowd_handovers"] = tracker.total_handovers
                     self.runtime["detector_device"] = getattr(tracker, "selected_device", "cpu")
                     last_finished = finished
                     self.status = (

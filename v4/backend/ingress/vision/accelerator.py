@@ -9,6 +9,7 @@ from functools import wraps
 from threading import RLock
 
 MPS_LOCK = RLock()
+TRACKER_LOCK = RLock()  # Ultralytics track ID allocation is process-global.
 
 
 def mps_guard(device):
