@@ -235,3 +235,18 @@ def test_review_api_lists_serves_and_labels(tmp_path):
         assert client.get("/api/live/activity").json()["windows"] == []
         assert client.get("/api/live/scorecard").json()["exact_windows"] == 1
         assert "Door review" in client.get("/api/live/review").text
+
+
+def test_window_keeps_the_track_positions_seen_inside_it(tmp_path):
+    store = make_store(tmp_path)
+    rec, _ = recorder(store)
+    rec.track(100.0, "7", 0.9, 0.7)  # long before the window
+    rec.update(103.0, "2026-11-18T12:00:03.000+00:00", 1, False)
+    rec.track(103.0, "7", 0.8, 0.7)
+    rec.track(103.4, "7", 0.5, 0.7)
+    rec.update(103.4, None, 1, False)
+    rec.update(104.6, None, 0, False)
+    (window_id,) = flush(rec)
+    strip = activity.strip_path(store, EVENT, window_id, "side")
+    trace = json.loads((strip.parent / f"{window_id}-trace.json").read_text())
+    assert trace == [[1.0, "7", 0.8, 0.7], [1.4, "7", 0.5, 0.7]]

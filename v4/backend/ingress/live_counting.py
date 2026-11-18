@@ -43,6 +43,9 @@ class PassageCalibration:
     max_gap_seconds: float = 1.0
     max_traversal_seconds: float = 3.0
     min_motion: float = 0.05
+    # A destination observation at least this far past the gate confirms on
+    # its own. None keeps the two-observation rule for every destination.
+    confirm_distance: float | None = None
 
     def __post_init__(self) -> None:
         if self.axis not in {"vertical", "horizontal"}:
@@ -61,6 +64,10 @@ class PassageCalibration:
                      "max_traversal_seconds"):
             if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be finite and positive")
+        if self.confirm_distance is not None and not (
+                math.isfinite(self.confirm_distance)
+                and self.hysteresis < self.confirm_distance < 1):
+            raise ValueError("confirm_distance must exceed hysteresis and be less than 1")
         if (self.gate_start is None) != (self.gate_end is None):
             raise ValueError("Both custom gate endpoints are required")
         if self.gate_start is not None:
@@ -220,10 +227,14 @@ class PassageCounter:
         if side == 0:
             state.pending_side = 0
             return None
+        clear = (self.calibration.confirm_distance is not None
+                 and abs(distance) >= self.calibration.confirm_distance)
         if state.pending_side != side:
             state.pending_side, state.pending_since = side, now
-            return None
-        if now - state.pending_since + 1e-9 < self.calibration.confirm_seconds:
+            if not clear:
+                return None
+        elif not clear and (now - state.pending_since + 1e-9
+                            < self.calibration.confirm_seconds):
             return None
 
         crossed = state.crossing_at is not None and state.crosses_gate

@@ -165,3 +165,58 @@ Read from the running station before the first deploy unless noted.
   there can open motion-only windows.
 - Capture stops, and counts the skip in `runtime.activity_capture`, when less
   than 2 GB of disk is free. The booth has about 6 GB.
+
+## First measured result (labelled 2026-11-18)
+
+85 clips from 18:17 to 21:27 UTC were labelled blind, on `yolo26n`, 960 px,
+`live_tracker.yaml`, line at x=0.55.
+
+| | counted | true | missed | extra |
+|---|---|---|---|---|
+| in | 28 | 30 | 2 | 0 |
+| out | 25 | 31 | 7 | 1 |
+
+Recall 85% (95% interval 74–92%), precision 98% (90–100%), 75 of 85 clips exact.
+
+What the ten wrong clips show:
+
+- Eight misses are one person passing close to the camera, head and shoulders
+  at the bottom of the frame. Running `yolo26n` over the saved frames finds
+  them at 0.86–0.90 confidence in every frame, so detection is not the cause.
+- On exits the box centre is last seen at x≈0.45–0.48, then the person is
+  behind the door. With the line at 0.55 that is one observation past the
+  line, and the counter needed two.
+- Two labels look doubtful and were left as labelled: `act-98c56411` (the
+  clip shows a person leaving; labelled 0, counted 1 out) and `act-fbef7ebe`
+  (labelled 1 out; the person stays inside the office).
+- Not explained: `act-c2b510e6` and `act-6200af45` have several clear
+  detections on both sides of the line and were still missed live. No track
+  positions were stored, so the cause is unknown.
+
+Replaying the counter over detections from the saved frames (a simple IoU
+tracker, not the live one; it agrees with the live count on 77 of 85 clips):
+
+| line | single clear observation confirms | right | missed | extra |
+|---|---|---|---|---|
+| 0.55 | no | 53 | 8 | 0 |
+| 0.55 | yes | 57 | 4 | 0 |
+| 0.57 | yes | 58 | 3 | 0 |
+| 0.60 | yes | 59 | 2 | 2 |
+| 0.68 | no | 57 | 4 | 13 |
+
+These numbers are fitted to the same 85 clips, so they are a prediction, not
+a measurement.
+
+## Change deployed 21:36 UTC
+
+- Line moved to x=0.57.
+- `confirm_distance` 0.07: one destination observation at least that far past
+  the line confirms a crossing that intersected the gate and moved
+  `min_motion`. Unset keeps the two-observation rule.
+- Each saved clip now has `<id>-trace.json` beside its strips: the tracker's
+  anchor positions `[offset, track, x, y]`, so the next unexplained miss can
+  be read off.
+
+Label the new setup from `?since=2026-11-18T21:36`. Watch `extra` as well as
+recall: a single-observation confirm has less protection against one box
+jumping across the line.

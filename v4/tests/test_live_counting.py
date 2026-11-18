@@ -148,3 +148,29 @@ def test_legacy_shaped_configuration_can_be_adapted_without_mutation():
     assert calibration.position == .4
     assert calibration.anchor == "center"
     assert not calibration.entry_positive
+
+
+def test_one_clear_destination_observation_confirms_when_enabled():
+    # A person who leaves the view right after the gate gives a single
+    # destination observation; the default rule needs two.
+    exit_path = [(0, (.9, .7)), (.2, (.7, .7)), (.4, (.48, .7))]
+    assert run(PassageCounter(PassageCalibration(position=.57)), exit_path) == []
+    counter = PassageCounter(PassageCalibration(position=.57, confirm_distance=.07))
+    assert run(counter, exit_path) == ["out"]
+
+
+def test_clear_confirm_still_needs_distance_gate_crossing_and_motion():
+    near = PassageCounter(PassageCalibration(position=.57, confirm_distance=.07))
+    assert run(near, [(0, (.9, .7)), (.2, (.7, .7)), (.4, (.52, .7))]) == []
+    assert near.update("person", (.52, .7), .6) == "out"
+    outside = PassageCounter(PassageCalibration(
+        position=.57, segment_start=.4, segment_end=.98, confirm_distance=.07))
+    assert run(outside, [(0, (.9, .2)), (.2, (.7, .2)), (.4, (.4, .2))]) == []
+    short = PassageCounter(PassageCalibration(
+        position=.57, min_motion=.3, confirm_distance=.07))
+    assert run(short, [(0, (.63, .7)), (.2, (.63, .7)), (.4, (.49, .7))]) == []
+
+
+def test_confirm_distance_must_exceed_hysteresis():
+    with pytest.raises(ValueError):
+        PassageCalibration(confirm_distance=.02)

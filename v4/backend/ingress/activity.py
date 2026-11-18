@@ -176,6 +176,8 @@ class ActivityRecorder:
         self.uncounted_times: deque[float] = deque()
         self.jobs: queue.Queue = queue.Queue()
         self.motion = GateMotion()
+        # What the tracker reported, kept so a missed crossing can be explained.
+        self.points: deque[tuple[float, str, float, float]] = deque(maxlen=4000)
         self.metrics = {
             "saved": 0,
             "saved_without_passage": 0,
@@ -230,6 +232,10 @@ class ActivityRecorder:
             if forced or now - window.last_active >= self.quiet_seconds:
                 self._close(window, min(now, window.last_active + self.quiet_seconds), forced)
                 self.previous_forced = forced
+
+    def track(self, now: float, track_id: str, x: float, y: float) -> None:
+        """Record one counted-anchor position, normalized to the frame."""
+        self.points.append((now, str(track_id), x, y))
 
     def passage(self, passage_id: str, direction: str, now: float) -> None:
         with self.lock:
@@ -298,6 +304,14 @@ class ActivityRecorder:
         if not strips:
             self.metrics["skipped_no_frames"] += 1
             return None
+        trace = [
+            [round(at - start, 3), track, round(x, 4), round(y, 4)]
+            for at, track, x, y in list(self.points)
+            if start <= at <= end + post
+        ]
+        trace_path = folder / f"{window_id}-trace.json"
+        trace_path.write_text(json.dumps(trace))
+        trace_path.chmod(0o600)
         directions = [direction for _id, direction, _at in window.passages]
         with self.store.transaction() as db:
             db.execute(

@@ -47,6 +47,7 @@ class LiveCalibration(BaseModel):
     confirm_seconds: float = Field(default=0.1, gt=0, le=2)
     max_gap_seconds: float = Field(default=1.0, gt=0, le=3)
     min_motion: float = Field(default=0.05, gt=0, le=0.5)
+    confirm_distance: float | None = Field(default=None, gt=0, le=0.5)
     gate_start: tuple[float, float] | None = None
     gate_end: tuple[float, float] | None = None
 
@@ -1021,6 +1022,10 @@ class LiveSession:
                             )
                         if self.config.count_passages:
                             cv2.circle(display, (int(x), int(y)), 5, (60, 140, 240), -1)
+                        if self.activity:
+                            self.activity.track(
+                                tracking_time, track.track_id, x / width, y / height
+                            )
                         direction = self.counter.update(
                             track.track_id,
                             (x / width, y / height),
