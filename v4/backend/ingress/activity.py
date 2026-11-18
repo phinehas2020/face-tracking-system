@@ -39,7 +39,7 @@ MAX_FRAMES = 40
 class FrameRing:
     """The last few seconds of encoded camera frames, thinned to a fixed rate."""
 
-    def __init__(self, seconds: float = 13.0, max_fps: float = 6.0):
+    def __init__(self, seconds: float = 16.0, max_fps: float = 6.0):
         self.seconds = seconds
         self.interval = 1 / max_fps
         self.frames: deque[tuple[float, bytes]] = deque()
@@ -95,9 +95,11 @@ class _Window:
     started_at: str
     last_active: float
     cause: str
+    pre: float = 0.0
     peak_people: int = 0
     passages: list[tuple[str, str, float]] = field(default_factory=list)
     continuation: bool = False
+    moved: bool = False
 
 
 def build_strip(frames: list[tuple[float, bytes]], start: float):
@@ -150,8 +152,8 @@ class ActivityRecorder:
         max_bytes: int = 600 * 1024 * 1024,
         min_free_bytes: int = 2 * 1024**3,
         quiet_seconds: float = 1.0,
-        max_seconds: float = 8.0,
-        pre_seconds: float = 1.5,
+        max_seconds: float = 10.0,
+        pre_seconds: float = 1.0,
         post_seconds: float = 1.0,
         uncounted_per_hour: int = 30,
         start_writer: bool = True,
@@ -206,14 +208,18 @@ class ActivityRecorder:
             window = self.window
             if people or moving:
                 if window is None:
+                    # A window cut at the length limit and the one that continues
+                    # it share no frames, so no crossing is shown to a reviewer twice.
                     window = self.window = _Window(
                         now,
                         observed_at or utc_now(),
                         now,
                         "people" if people else "motion",
+                        pre=0.0 if self.previous_forced else self.pre_seconds,
                         continuation=self.previous_forced,
                     )
                 window.last_active = now
+                window.moved = window.moved or moving
                 window.peak_people = max(window.peak_people, people)
                 if people and window.cause == "motion":
                     window.cause = "people"
@@ -222,53 +228,59 @@ class ActivityRecorder:
                 return
             forced = now - window.start >= self.max_seconds
             if forced or now - window.last_active >= self.quiet_seconds:
-                self._close(window, min(now, window.last_active + self.quiet_seconds))
+                self._close(window, min(now, window.last_active + self.quiet_seconds), forced)
                 self.previous_forced = forced
 
     def passage(self, passage_id: str, direction: str, now: float) -> None:
         with self.lock:
             if self.window is None:
-                self.window = _Window(now, utc_now(), now, "passage")
+                self.window = _Window(now, utc_now(), now, "passage", pre=self.pre_seconds)
             self.window.passages.append((passage_id, direction, now))
             self.window.last_active = now
 
-    def _close(self, window: _Window, end: float) -> None:
+    def _close(self, window: _Window, end: float, forced: bool = False) -> None:
         self.window = None
         if not window.passages:
-            # Someone standing in view is one window, not one every eight seconds.
+            # Someone standing still in view is one window, not one every ten
+            # seconds. A later stretch is kept only if something moved at the line.
             while self.uncounted_times and end - self.uncounted_times[0] > 3600:
                 self.uncounted_times.popleft()
-            if window.continuation or len(self.uncounted_times) >= self.uncounted_per_hour:
+            if (window.continuation and not window.moved) or (
+                len(self.uncounted_times) >= self.uncounted_per_hour
+            ):
                 self.metrics["skipped_rate_limit"] += 1
                 return
             self.uncounted_times.append(end)
-        self.jobs.put((window, end))
+        self.jobs.put((window, end, 0.0 if forced else self.post_seconds))
 
     # -- writer thread ------------------------------------------------------
 
     def _run(self) -> None:
         while not self.stopped.is_set():
             try:
-                window, end = self.jobs.get(timeout=0.5)
+                window, end, post = self.jobs.get(timeout=0.5)
             except queue.Empty:
                 continue
             # Let the cameras deliver the frames that follow the window.
-            self.stopped.wait(max(0.0, end + self.post_seconds + 0.4 - time.monotonic()))
+            self.stopped.wait(max(0.0, end + post + 0.4 - time.monotonic()))
             try:
-                self.save(window, end)
+                self.save(window, end, post)
             except Exception:
                 self.metrics["errors"] += 1
 
-    def save(self, window: _Window, end: float) -> str | None:
+    def save(self, window: _Window, end: float, post: float | None = None) -> str | None:
         if shutil.disk_usage(self.root).free < self.min_free_bytes:
             self.metrics["skipped_low_disk"] += 1
             return None
-        start = window.start - self.pre_seconds
+        post = self.post_seconds if post is None else post
+        start = window.start - window.pre
+        # The part of the strip the label is about; the rest is context.
+        span = [round(window.pre, 3), round(window.pre + end - window.start, 3)]
         window_id = "act-" + uuid.uuid4().hex
         folder = self.root / window.started_at[:10]
         strips, written = {}, 0
         for view, ring in self.rings.items():
-            built = build_strip(ring.window(start, end + self.post_seconds), start)
+            built = build_strip(ring.window(start, end + post), start)
             if built is None:
                 continue
             data, layout = built
@@ -277,7 +289,12 @@ class ActivityRecorder:
             path.write_bytes(data)
             path.chmod(0o600)
             written += len(data)
-            strips[view] = {**layout, "file": str(path.relative_to(self.root)), "bytes": len(data)}
+            strips[view] = {
+                **layout,
+                "span": span,
+                "file": str(path.relative_to(self.root)),
+                "bytes": len(data),
+            }
         if not strips:
             self.metrics["skipped_no_frames"] += 1
             return None
@@ -345,7 +362,13 @@ def _row(row) -> dict:
     return item
 
 
-def list_windows(store: EventStore, event_id: str, state: str = "unlabelled", limit: int = 50):
+def list_windows(
+    store: EventStore,
+    event_id: str,
+    state: str = "unlabelled",
+    limit: int = 50,
+    since: str | None = None,
+):
     clause = {
         "unlabelled": "AND labelled_at IS NULL",
         "labelled": "AND labelled_at IS NOT NULL",
@@ -353,9 +376,9 @@ def list_windows(store: EventStore, event_id: str, state: str = "unlabelled", li
     }[state]
     with store.connect() as db:
         rows = db.execute(
-            f"SELECT * FROM activity_windows WHERE event_id=? {clause} "
+            f"SELECT * FROM activity_windows WHERE event_id=? AND started_at>=? {clause} "
             "ORDER BY started_at DESC LIMIT ?",
-            (event_id, limit),
+            (event_id, since or "", limit),
         ).fetchall()
     return [_row(row) for row in rows]
 
@@ -404,22 +427,24 @@ def wilson(successes: int, total: int, z: float = 1.96) -> list[float] | None:
     ]
 
 
-def scorecard(store: EventStore, event_id: str) -> dict:
+def scorecard(store: EventStore, event_id: str, since: str | None = None) -> dict:
     """Counting accuracy over the windows a person has labelled.
 
     Misses and extras are counted per window and direction, so an extra and a
     miss of the same direction inside one window cancel. Windows are short, so
-    this is rare, but the figures are a floor on both error types.
+    this is rare, but the figures are a floor on both error types. ``since``
+    (an ISO time) keeps one configuration's windows apart from an earlier one's.
     """
     with store.connect() as db:
         rows = db.execute(
             "SELECT cause,system_in,system_out,label_in,label_out,labelled_at "
-            "FROM activity_windows WHERE event_id=?",
-            (event_id,),
+            "FROM activity_windows WHERE event_id=? AND started_at>=?",
+            (event_id, since or ""),
         ).fetchall()
     labelled = [row for row in rows if row["labelled_at"]]
     result = {
         "event_id": event_id,
+        "since": since,
         "windows": len(rows),
         "labelled": len(labelled),
         "unlabelled": len(rows) - len(labelled),

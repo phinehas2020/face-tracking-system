@@ -21,15 +21,19 @@ Turn capture on with `"activity_capture": true` in the camera file
 
 1. **Window.** A window opens when the counting view has a tracked person or
    frame-to-frame change on the three gate strips, and closes after one quiet
-   second or at eight seconds. Passages recorded inside it are attached.
-2. **Strip.** Each camera keeps its last 13 seconds of encoded frames at six a
+   second or at ten seconds. Passages recorded inside it are attached.
+2. **Strip.** Each camera keeps its last 16 seconds of encoded frames at six a
    second. A closed window becomes one contact-sheet JPEG per camera (up to 40
-   frames, 480 px wide), from 1.5 s before to 1 s after.
+   frames, 480 px wide), with one second of context before and after. A window
+   cut at ten seconds and the one that continues it share no frames, so no
+   crossing is shown twice.
 3. **Uncounted windows are the point.** A window with no passage is saved too,
-   at most 30 an hour, and someone standing in view is one window, not one every
-   eight seconds. These are where missed people are found.
-4. **Label.** The reviewer gives true entries and exits for the window. The
-   system's own count is the default, so a correct window is one keypress.
+   at most 30 an hour. Someone standing still is one window; a later stretch of
+   the same visit is kept only if something moved at the line. These are where
+   missed people are found.
+4. **Label, blind.** The reviewer counts crossings of the line inside the shaded
+   span of the clip. The station's own count and its passage marks stay hidden
+   until the answer is saved.
 5. **Score.** Misses and extras are summed per window and direction. An extra
    and a miss of the same direction inside one window cancel, so both figures
    are floors.
@@ -51,9 +55,45 @@ Wilson score intervals (Wilson, JASA 1927).
   under its body track and again under its face track; 44 such pairs made 43 of
   the 203 automatic merges and counted double toward the three-sample bar.
 
+## The first thing it found: the station had stopped counting
+
+On the evening of 2026-11-17 the booth was switched to the `crowd-consensus`
+tracker with the RF-DETR second look and a 640 px detector (commit b1ded1b).
+Counted passages between 13:00 and 18:00 UTC, the booth's morning:
+
+| Day | Passages counted |
+|---|---:|
+| Weekdays 2026-11-09 to 2026-11-17 | 9, 23, 42, 44, 45, 51, 58 |
+| 2026-11-18 | 3 |
+
+The first hour of activity windows shows why. Read by eye from the strips:
+
+| Configuration, 2026-11-18 | Real crossings seen in strips | Counted |
+|---|---:|---:|
+| Crowd-consensus, second look on (17:18 to 17:28 UTC) | 8 | 0 |
+| Crowd-consensus, second look off (17:30 to 17:32 UTC) | 2 | 1 |
+
+- With the second look on, the side camera's detect-and-track step averaged
+  328 ms a frame while a person was in view, and a track was present in only 26
+  frames across those four visits. The second look runs RF-DETR on the CPU, about
+  300 ms, inside the counting loop whenever the gate strips move.
+- With it off the same step averaged 131 ms and one of two crossings was
+  counted; the miss was a person carrying a box on one shoulder.
+- At 17:41 UTC the booth was returned to the tracker file and 960 px detector it
+  had before that change (`live_tracker.yaml`, no second look), keeping the
+  crossing zone and activity capture on. The earlier settings and status
+  snapshots are in `deployment/activity-20261118/`.
+- **The restored configuration is not yet shown to count.** Nobody had walked
+  through in the first ten minutes after the change. Ten crossings read by one
+  person from strips are enough to see the collapse, not to rank the trackers.
+- The 12 windows saved before 17:41 UTC were cut with an earlier version of the
+  window boundaries, where consecutive strips overlapped. Leave them out:
+  open the review page with `?since=2026-11-18T17:41`, and pass the same value
+  to `/api/live/scorecard` or `ingress scorecard --since`.
+
 ## Measurements on the booth Mac, 2026-11-18
 
-Read from the running station before the deploy unless noted.
+Read from the running station before the first deploy unless noted.
 
 | Measure | Value |
 |---|---:|
@@ -64,23 +104,24 @@ Read from the running station before the deploy unless noted.
 | Facing-camera faces beyond 45 degrees of yaw | 820 of 1,405 |
 | Facing-camera faces accepted by the pose gate | 57 of 1,134 |
 | Stored face tracklets with a single sample | 284 of 400 |
-| Crossings linked across cameras since 2026-11-17 | 0 of 60 |
+| Passages linked across cameras since 2026-11-17 23:00 UTC | 0 of 21 |
 | Free disk on the booth | 6.4 GB of 228 GB |
 
 - **The facing camera looks through a door leaf.** On 2026-10-07 its view was
   the open doorway. On 2026-11-18 the right leaf stands across the lens, so
   people are seen through glass and muntin bars, close to the camera, in
   profile, with heads cut by the top of the frame.
-- **The door hides the counting line from the side camera.** In the first
-  uncounted window captured after the deploy (17:18 UTC), one person came in,
-  walked to the office and left again; the station counted neither crossing.
-  The inward-opening leaf covers the line as the person passes it. One window,
-  seconds after a restart, read by eye: an observation, not a rate.
-- **Frame rate is set by the shared GPU, not by any one model.** After the
-  deploy a frame takes about 48 ms of work with nobody in view and the loop then
-  waits about 80 ms for its turn. With a person in the facing view the detector
-  took 79 ms and body appearance (OSNet) another 73 ms, giving 6.0 frames a
-  second over the first 26 such frames.
+- **The door swings through the side camera's view.** The inward-opening leaf
+  sweeps across the counting line as a person enters or leaves. Whether that
+  costs crossings is a hypothesis: every miss seen so far happened under the
+  slow configuration above.
+- **Where a frame's time goes.** With the 640 px detector and nobody in view, a
+  frame took about 48 ms of work and the loop then waited about 80 ms before the
+  next frame, although the cameras deliver 15 to 20 a second. The cause of that
+  wait was not established. With the restored 960 px detector the same step
+  takes about 160 ms and the wait is 1 ms, about 6 frames a second per camera.
+- **Body appearance is expensive when people are present.** OSNet added 22 to 73
+  ms a frame across three short samples (26 to 259 frames).
 - **A different detector runtime is not a shortcut.** YOLO26m through ONNX
   Runtime's Core ML provider took 51 ms a frame against 58 ms for PyTorch MPS,
   both with the live service running. A direct Core ML export failed in
@@ -91,15 +132,17 @@ Read from the running station before the deploy unless noted.
 
 ## Verified, and not
 
-- 249 backend tests pass on the booth, nine of them new: ring thinning, a
-  counted window with a strip from each camera, a loitering visitor, the hourly
-  limit, low disk, pruning with labels kept, gate motion, the scorecard
-  arithmetic and the review API.
-- Capture is running on the booth and saved real windows; the review page
-  serves. **No window has been labelled, so there is no accuracy figure yet.**
-- The review page was not exercised in a browser.
+- 250 backend tests pass on the booth, ten of them new: ring thinning, a
+  counted window with a strip from each camera, a loitering visitor, movement in
+  a later stretch, the hourly limit, low disk, pruning with labels kept, gate
+  motion, the scorecard arithmetic with a start time, and the review API.
+- Capture is running on the booth and saved real windows. The review page was
+  loaded in Chrome through the tunnel: both views play in step, the counting
+  line is drawn, a label saved and the scorecard updated. That test label was
+  cleared afterwards.
+- **No window is labelled, so there is no accuracy figure yet.**
 - The idle face-scan change was not shown to raise frame rate: 7.0 before, 7.3
-  after, within noise.
+  after, within noise. It applies to the counting camera only.
 
 ## Known limits
 
@@ -109,3 +152,5 @@ Read from the running station before the deploy unless noted.
   misses entirely while moving slowly may not open a window.
 - The interior window behind the counting line shows the next room, so movement
   there can open motion-only windows.
+- Capture stops, and counts the skip in `runtime.activity_capture`, when less
+  than 2 GB of disk is free. The booth has about 6 GB.

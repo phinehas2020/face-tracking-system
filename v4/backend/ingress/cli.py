@@ -69,6 +69,7 @@ def main() -> None:
         "scorecard", help="Counting accuracy over the activity windows a person has labelled"
     )
     score.add_argument("event_id")
+    score.add_argument("--since", help="Only windows that started at or after this ISO time")
 
     calibrate = subparsers.add_parser(
         "calibrate-resolution", help="Fit the resolver's score calibration from reviewed links"
@@ -120,7 +121,7 @@ def main() -> None:
     elif args.command == "scorecard":
         from . import activity
 
-        print(json.dumps(activity.scorecard(store, args.event_id), indent=2))
+        print(json.dumps(activity.scorecard(store, args.event_id, args.since), indent=2))
     elif args.command == "calibrate-resolution":
         from . import resolution
 

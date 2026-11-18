@@ -82,8 +82,9 @@ def test_counted_window_keeps_a_strip_from_each_camera(tmp_path):
         path = activity.strip_path(store, EVENT, window_id, view)
         sheet = cv2.imread(str(path))
         layout = strips[view]
-        # 1.5 s before the first activity to 1 s after it went quiet, at six frames a second.
-        assert 20 <= layout["frames"] <= 30 and len(layout["times"]) == layout["frames"]
+        # One second before the first activity to one after it went quiet.
+        assert 18 <= layout["frames"] <= 30 and len(layout["times"]) == layout["frames"]
+        assert layout["span"] == [1.0, 3.2]
         assert sheet.shape[1] == layout["columns"] * layout["cell"][0]
         assert 0 <= layout["times"][0] < 0.3
     assert activity.strip_path(store, EVENT, window_id, "../../ingress.db") is None
@@ -105,6 +106,19 @@ def test_someone_standing_in_view_is_one_uncounted_window(tmp_path):
     assert (first["cause"], first["system_in"]) == ("people", 0)
     # The crossing is kept even though it falls in a later stretch of the same visit.
     assert (second["cause"], second["system_in"]) == ("passage", 1)
+    # Consecutive stretches share no frames, so no crossing is reviewed twice.
+    one, two = (json.loads(row["strips"])["side"] for row in (first, second))
+    assert one["span"] == [1.0, 4.0] and two["span"][0] == 0.0
+    assert one["times"][-1] <= one["span"][1] + 1e-6
+
+
+def test_movement_at_the_line_keeps_a_later_uncounted_stretch(tmp_path):
+    store = make_store(tmp_path)
+    rec, _ = recorder(store, max_seconds=3)
+    for step in range(70):
+        rec.update(101 + step / 10, None, 1, step == 45)  # they move at the line once
+    rec.update(109.5, None, 0, False)
+    assert len(flush(rec)) == 2 and rec.metrics["skipped_rate_limit"] == 1
 
 
 def test_uncounted_windows_are_rate_limited_and_motion_alone_is_recorded(tmp_path):
@@ -182,6 +196,10 @@ def test_scorecard_counts_misses_extras_and_unlabelled_windows(tmp_path):
     assert low < 0.6 < high and low >= 0 and high <= 1
     assert card["by_cause"]["people"] == {"windows": 1, "counted": 0, "true": 1}
     assert activity.scorecard(make_store(tmp_path / "empty"), EVENT)["recall"] is None
+    # A later start time leaves out the windows of an earlier configuration.
+    later = activity.scorecard(store, EVENT, since="2026-11-18T12:00:04")
+    assert (later["windows"], later["labelled"], later["true"]) == (3, 2, 1)
+    assert len(activity.list_windows(store, EVENT, "all", since="2026-11-18T12:00:04")) == 3
 
 
 class FakeSession:

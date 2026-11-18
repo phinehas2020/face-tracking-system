@@ -44,6 +44,8 @@
   canvas { width: 100%; height: auto; display: block; background: #000; border-radius: 6px; }
   .scrub { position: relative; margin: 12px 0 4px; }
   .scrub input { width: 100%; margin: 0; }
+  .span { position: absolute; top: 0; bottom: 16px; background: var(--accent); opacity: 0.18;
+    border-radius: 4px; pointer-events: none; }
   .marks { position: relative; height: 16px; }
   .marks i { position: absolute; top: 0; font-style: normal; font-size: 11px;
     transform: translateX(-50%); color: var(--accent); white-space: nowrap; }
@@ -61,8 +63,9 @@
 <body>
 <main>
   <h1>Door review</h1>
-  <p class="lede">Each clip is a moment when something moved at the door. Say how many people
-    really went in and out. Clips where nothing was counted are how missed people are found.</p>
+  <p class="lede">Each clip is a moment when something moved at the door. Count the people who
+    cross the orange line during the shaded part of the clip, in each direction. The station's
+    own count stays hidden until you save, so it cannot sway the answer.</p>
   <section class="score" id="score" aria-label="Scorecard"></section>
   <div class="bar">
     <label>Show <select id="state">
@@ -79,6 +82,10 @@
 <script>
 const api = "/api/live/";
 let queue = [], index = 0, images = {}, clock = 0, playing = true, last = 0, answer = { in: 0, out: 0 };
+let gate = null;
+// ?since=2026-11-18T17:41 keeps one configuration's clips apart from an earlier one's.
+const since = new URLSearchParams(location.search).get("since");
+const scope = since ? "&since=" + encodeURIComponent(since) : "";
 const $ = (id) => document.getElementById(id);
 const pct = (v) => (v == null ? "n/a" : (v * 100).toFixed(1) + "%");
 const range = (v) => (v ? ` (${pct(v[0])} to ${pct(v[1])})` : "");
@@ -100,7 +107,7 @@ function showScore(s) {
 }
 
 async function load() {
-  const response = await fetch(api + "activity?limit=300&state=" + $("state").value);
+  const response = await fetch(api + "activity?limit=300&state=" + $("state").value + scope);
   const data = await response.json();
   queue = data.windows.reverse(); index = 0; showScore(data.scorecard);
   if (!data.capturing && !queue.length) {
@@ -115,21 +122,23 @@ function show() {
   $("position").textContent = queue.length ? `${index + 1} of ${queue.length}` : "0";
   if (!item) { $("stage").innerHTML = '<p class="empty">Nothing here to review.</p>'; return; }
   const labelled = item.labelled_at != null;
-  answer = { in: labelled ? item.label_in : item.system_in, out: labelled ? item.label_out : item.system_out };
+  answer = { in: labelled ? item.label_in : 0, out: labelled ? item.label_out : 0 };
+  const span = (Object.values(item.strips)[0] || {}).span;
   const views = Object.keys(item.strips);
   const duration = Math.max(...views.map((v) => item.strips[v].times.at(-1) || 0), 0.1);
   const when = new Date(item.started_at).toLocaleString();
   const cause = { passage: "counted", people: "person seen, nothing counted", motion: "motion only" }[item.cause];
+  const reveal = labelled ? `<span class="chip">${cause}</span>
+        <span class="chip">station: ${item.system_in} in, ${item.system_out} out</span>
+        <span class="chip">reviewed: ${item.label_in} in, ${item.label_out} out</span>` : "";
   $("stage").innerHTML = `
     <div class="card">
-      <div class="meta"><strong>${when}</strong><span class="chip">${cause}</span>
-        <span class="chip">system: ${item.system_in} in, ${item.system_out} out</span>
-        ${labelled ? `<span class="chip">reviewed: ${item.label_in} in, ${item.label_out} out</span>` : ""}
-      </div>
+      <div class="meta"><strong>${when}</strong>${reveal}</div>
       <div class="views">${views.map((v) => `<figure><figcaption>${v} camera</figcaption>
         <canvas id="c-${v}" width="${item.strips[v].cell[0]}" height="${item.strips[v].cell[1]}"></canvas></figure>`).join("")}</div>
-      <div class="scrub"><input id="scrub" type="range" min="0" max="${duration}" step="0.01" value="0" aria-label="Position in clip">
-        <div class="marks">${item.passages.map((p) => `<i style="left:${(p.offset / duration) * 100}%">${p.direction === "in" ? "in" : "out"}</i>`).join("")}</div></div>
+      <div class="scrub">${span ? `<div class="span" style="left:${(span[0] / duration) * 100}%;width:${(Math.min(span[1], duration) - span[0]) / duration * 100}%"></div>` : ""}
+        <input id="scrub" type="range" min="0" max="${duration}" step="0.01" value="0" aria-label="Position in clip">
+        <div class="marks">${labelled ? item.passages.map((p) => `<i style="left:${(p.offset / duration) * 100}%">${p.direction === "in" ? "in" : "out"}</i>`).join("") : ""}</div></div>
       <div class="answer">
         <div class="step"><span>Went in</span><button data-k="in" data-d="-1" aria-label="One fewer in">-</button><output id="o-in"></output><button data-k="in" data-d="1" aria-label="One more in">+</button></div>
         <div class="step"><span>Went out</span><button data-k="out" data-d="-1" aria-label="One fewer out">-</button><output id="o-out"></output><button data-k="out" data-d="1" aria-label="One more out">+</button></div>
@@ -157,7 +166,7 @@ function paint() {
   const item = queue[index]; if (!item) return;
   for (const key of ["in", "out"]) {
     const out = $("o-" + key); out.textContent = answer[key];
-    out.className = answer[key] !== item["system_" + key] ? "diff" : "";
+    out.className = item.labelled_at != null && answer[key] !== item["system_" + key] ? "diff" : "";
   }
 }
 
@@ -169,7 +178,12 @@ function draw() {
     let frame = 0;
     for (let i = 0; i < strip.times.length; i++) if (strip.times[i] <= clock) frame = i;
     const [w, h] = strip.cell;
-    canvas.getContext("2d").drawImage(image, (frame % strip.columns) * w, Math.floor(frame / strip.columns) * h, w, h, 0, 0, w, h);
+    const context = canvas.getContext("2d");
+    context.drawImage(image, (frame % strip.columns) * w, Math.floor(frame / strip.columns) * h, w, h, 0, 0, w, h);
+    if (view === "side" && gate) {
+      context.strokeStyle = "#f08a24"; context.lineWidth = 2; context.beginPath();
+      context.moveTo(gate[0][0] * w, gate[0][1] * h); context.lineTo(gate[1][0] * w, gate[1][1] * h); context.stroke();
+    }
   }
   const scrub = $("scrub"); if (scrub && playing) scrub.value = clock;
 }
@@ -187,7 +201,7 @@ function tick(now) {
 async function save() {
   const item = queue[index]; if (!item) return;
   const note = $("note").value.trim() || null;
-  const response = await fetch(`${api}activity/${item.id}/label`, {
+  const response = await fetch(`${api}activity/${item.id}/label?${scope.slice(1)}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ entries: answer.in, exits: answer.out, note }),
   });
@@ -217,8 +231,16 @@ document.addEventListener("keydown", (e) => {
     scrub.value = clock; draw();
   }
 });
+async function loadGate() {
+  try {
+    const c = (await (await fetch(api + "status")).json()).calibration;
+    if (c.gate_start && c.gate_end) gate = [c.gate_start, c.gate_end];
+    else if (c.axis === "vertical") gate = [[c.position, c.segment_start], [c.position, c.segment_end]];
+    else gate = [[c.segment_start, c.position], [c.segment_end, c.position]];
+  } catch (error) { gate = null; }
+}
 requestAnimationFrame(tick);
-load();
+loadGate().then(load);
 </script>
 </body>
 </html>

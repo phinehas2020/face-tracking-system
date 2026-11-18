@@ -872,11 +872,12 @@ class LiveSession:
                             and state.identity_id
                             and state.state != "conflict"
                         }
-                        # An empty view is scanned twice a second, not on every frame: a
-                        # face the body detector missed is still found, and the face
-                        # model stops competing with the detector when nobody is there.
+                        # An empty counting view is scanned twice a second, not on every
+                        # frame: it had run 325,891 scans for one face.
+                        # The recognition camera keeps scanning every frame.
                         if (
-                            tracks
+                            not self.config.count_passages
+                            or tracks
                             or tracking_time - last_face_seen <= 2.0
                             or tracking_time - last_face_submit >= 0.5
                         ):
@@ -1273,7 +1274,9 @@ def live_router() -> APIRouter:
             return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @router.get("/activity")
-    def activity_windows(request: Request, state: str = "unlabelled", limit: int = 50):
+    def activity_windows(
+        request: Request, state: str = "unlabelled", limit: int = 50, since: str | None = None
+    ):
         from . import activity
 
         if state not in {"unlabelled", "labelled", "all"}:
@@ -1281,9 +1284,9 @@ def live_router() -> APIRouter:
         value = session(request)
         return {
             "windows": activity.list_windows(
-                value.store, value.event_id, state, max(1, min(limit, 500))
+                value.store, value.event_id, state, max(1, min(limit, 500)), since
             ),
-            "scorecard": activity.scorecard(value.store, value.event_id),
+            "scorecard": activity.scorecard(value.store, value.event_id, since),
             "capturing": value.activity is not None,
         }
 
@@ -1300,7 +1303,9 @@ def live_router() -> APIRouter:
         )
 
     @router.post("/activity/{window_id}/label")
-    def activity_label(request: Request, window_id: str, data: ActivityLabel):
+    def activity_label(
+        request: Request, window_id: str, data: ActivityLabel, since: str | None = None
+    ):
         from . import activity
 
         value = session(request)
@@ -1308,14 +1313,14 @@ def live_router() -> APIRouter:
             value.store, value.event_id, window_id, data.entries, data.exits, data.actor, data.note
         ):
             raise HTTPException(404, "Unknown activity window")
-        return activity.scorecard(value.store, value.event_id)
+        return activity.scorecard(value.store, value.event_id, since)
 
     @router.get("/scorecard")
-    def scorecard(request: Request):
+    def scorecard(request: Request, since: str | None = None):
         from . import activity
 
         value = session(request)
-        return activity.scorecard(value.store, value.event_id)
+        return activity.scorecard(value.store, value.event_id, since)
 
     @router.get("/review", include_in_schema=False)
     def review_page():
