@@ -65,6 +65,11 @@ def main() -> None:
     )
     resolve_parser.add_argument("--actor", default="cli")
 
+    score = subparsers.add_parser(
+        "scorecard", help="Counting accuracy over the activity windows a person has labelled"
+    )
+    score.add_argument("event_id")
+
     calibrate = subparsers.add_parser(
         "calibrate-resolution", help="Fit the resolver's score calibration from reviewed links"
     )
@@ -112,6 +117,10 @@ def main() -> None:
         if args.apply:
             result.report["applied"] = resolution.apply(store, result, args.actor)
         print(json.dumps(result.report, indent=2))
+    elif args.command == "scorecard":
+        from . import activity
+
+        print(json.dumps(activity.scorecard(store, args.event_id), indent=2))
     elif args.command == "calibrate-resolution":
         from . import resolution
 

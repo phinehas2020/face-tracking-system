@@ -139,6 +139,8 @@ class _Unit:
     start: float | None = None
     end: float | None = None
     first_at: str | None = None
+    # Raw sample bytes, so one face stored under two track keys counts once.
+    sample_keys: frozenset = frozenset()
 
 
 @dataclass
@@ -319,6 +321,7 @@ def resolve(
                 _epoch(tracklet.first_observed_at),
                 _epoch(tracklet.last_observed_at),
                 tracklet.first_observed_at,
+                frozenset(row.tobytes() for row in tracklet.embeddings),
             )
         )
     if len(units) > config.max_units:
@@ -492,7 +495,16 @@ def resolve(
     cluster_rows = []
     for position, (matrix_index, member_groups) in enumerate(clusters):
         identities = sum(group_keys[g].startswith("identity:") for g in member_groups)
-        samples = int(sum(group_samples[g] for g in member_groups))
+        # The live registry stores a face sample under its body track and again
+        # under its face track. Count each distinct sample once toward the bar.
+        members = [
+            unit
+            for g in member_groups
+            for unit in ordered[starts[g] : starts[g] + sizes[g]]
+        ]
+        samples = sum(unit.samples for unit in members if not unit.sample_keys) + len(
+            frozenset().union(*(unit.sample_keys for unit in members))
+        )
         cluster_rows.append(
             {
                 "index": matrix_index,

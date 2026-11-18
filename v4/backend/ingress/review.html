@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Door review</title>
+<style>
+  :root {
+    --bg: #f5f4f0; --panel: #ffffff; --ink: #1c1b19; --muted: #6b6861; --line: #dcd9d1;
+    --accent: #b4541a; --good: #2f7d4f; --bad: #b3352b; --chip: #efede7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161513; --panel: #201f1c; --ink: #ece9e2; --muted: #9c988f; --line: #37352f;
+      --accent: #e08a4f; --good: #6cc08d; --bad: #e5746a; --chip: #2a2925;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.lede { margin: 0 0 16px; color: var(--muted); max-width: 70ch; }
+  .score { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 8px;
+    margin-bottom: 16px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; }
+  .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  select, button, input[type=text] { font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent);
+    outline-offset: 2px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 10px; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 2px 10px; font-size: 13px; }
+  .views { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; }
+  figure { margin: 0; }
+  figcaption { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  canvas { width: 100%; height: auto; display: block; background: #000; border-radius: 6px; }
+  .scrub { position: relative; margin: 12px 0 4px; }
+  .scrub input { width: 100%; margin: 0; }
+  .marks { position: relative; height: 16px; }
+  .marks i { position: absolute; top: 0; font-style: normal; font-size: 11px;
+    transform: translateX(-50%); color: var(--accent); white-space: nowrap; }
+  .answer { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-top: 12px;
+    padding-top: 12px; border-top: 1px solid var(--line); }
+  .step { display: flex; align-items: center; gap: 6px; }
+  .step output { min-width: 2ch; text-align: center; font-size: 20px;
+    font-variant-numeric: tabular-nums; }
+  .step button { width: 34px; padding: 4px 0; }
+  .keys { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .empty { color: var(--muted); padding: 32px 8px; text-align: center; }
+  .diff { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Door review</h1>
+  <p class="lede">Each clip is a moment when something moved at the door. Say how many people
+    really went in and out. Clips where nothing was counted are how missed people are found.</p>
+  <section class="score" id="score" aria-label="Scorecard"></section>
+  <div class="bar">
+    <label>Show <select id="state">
+      <option value="unlabelled">Not yet reviewed</option>
+      <option value="labelled">Reviewed</option>
+      <option value="all">All</option>
+    </select></label>
+    <button id="prev">Previous</button>
+    <button id="next">Skip</button>
+    <span id="position" class="chip"></span>
+  </div>
+  <section id="stage"></section>
+</main>
+<script>
+const api = "/api/live/";
+let queue = [], index = 0, images = {}, clock = 0, playing = true, last = 0, answer = { in: 0, out: 0 };
+const $ = (id) => document.getElementById(id);
+const pct = (v) => (v == null ? "n/a" : (v * 100).toFixed(1) + "%");
+const range = (v) => (v ? ` (${pct(v[0])} to ${pct(v[1])})` : "");
+
+function showScore(s) {
+  const cells = [
+    [s.labelled, "clips reviewed"], [s.unlabelled, "waiting"],
+    [`${s.counted} / ${s.true}`, "counted / true crossings"],
+    [pct(s.recall), "found" + range(s.recall_interval_95)],
+    [pct(s.precision), "correct" + range(s.precision_interval_95)],
+    [s.missed, "missed"], [s.extra, "extra"],
+  ];
+  $("score").replaceChildren(...cells.map(([value, label]) => {
+    const div = document.createElement("div"); div.className = "stat";
+    const b = document.createElement("b"); b.textContent = value;
+    const span = document.createElement("span"); span.textContent = label;
+    div.append(b, span); return div;
+  }));
+}
+
+async function load() {
+  const response = await fetch(api + "activity?limit=300&state=" + $("state").value);
+  const data = await response.json();
+  queue = data.windows.reverse(); index = 0; showScore(data.scorecard);
+  if (!data.capturing && !queue.length) {
+    $("stage").innerHTML = '<p class="empty">Clip capture is off. Set "activity_capture": true in the camera file.</p>';
+    $("position").textContent = ""; return;
+  }
+  show();
+}
+
+function show() {
+  const item = queue[index];
+  $("position").textContent = queue.length ? `${index + 1} of ${queue.length}` : "0";
+  if (!item) { $("stage").innerHTML = '<p class="empty">Nothing here to review.</p>'; return; }
+  const labelled = item.labelled_at != null;
+  answer = { in: labelled ? item.label_in : item.system_in, out: labelled ? item.label_out : item.system_out };
+  const views = Object.keys(item.strips);
+  const duration = Math.max(...views.map((v) => item.strips[v].times.at(-1) || 0), 0.1);
+  const when = new Date(item.started_at).toLocaleString();
+  const cause = { passage: "counted", people: "person seen, nothing counted", motion: "motion only" }[item.cause];
+  $("stage").innerHTML = `
+    <div class="card">
+      <div class="meta"><strong>${when}</strong><span class="chip">${cause}</span>
+        <span class="chip">system: ${item.system_in} in, ${item.system_out} out</span>
+        ${labelled ? `<span class="chip">reviewed: ${item.label_in} in, ${item.label_out} out</span>` : ""}
+      </div>
+      <div class="views">${views.map((v) => `<figure><figcaption>${v} camera</figcaption>
+        <canvas id="c-${v}" width="${item.strips[v].cell[0]}" height="${item.strips[v].cell[1]}"></canvas></figure>`).join("")}</div>
+      <div class="scrub"><input id="scrub" type="range" min="0" max="${duration}" step="0.01" value="0" aria-label="Position in clip">
+        <div class="marks">${item.passages.map((p) => `<i style="left:${(p.offset / duration) * 100}%">${p.direction === "in" ? "in" : "out"}</i>`).join("")}</div></div>
+      <div class="answer">
+        <div class="step"><span>Went in</span><button data-k="in" data-d="-1" aria-label="One fewer in">-</button><output id="o-in"></output><button data-k="in" data-d="1" aria-label="One more in">+</button></div>
+        <div class="step"><span>Went out</span><button data-k="out" data-d="-1" aria-label="One fewer out">-</button><output id="o-out"></output><button data-k="out" data-d="1" aria-label="One more out">+</button></div>
+        <input id="note" type="text" placeholder="Note (optional)" maxlength="300">
+        <button class="primary" id="save">Save</button>
+        <button id="none">Nobody crossed</button>
+      </div>
+      <p class="keys">Enter saves. N: nobody crossed. I / O add one in or out, Shift removes one. Space pauses. Arrow keys step.</p>
+    </div>`;
+  images = {};
+  for (const v of views) {
+    const image = new Image(); image.src = `${api}activity/${item.id}/${v}.jpg`;
+    image.onload = draw; images[v] = image;
+  }
+  clock = 0; playing = true;
+  $("scrub").oninput = (e) => { clock = +e.target.value; playing = false; draw(); };
+  $("save").onclick = () => save();
+  $("none").onclick = () => { answer = { in: 0, out: 0 }; save(); };
+  document.querySelectorAll(".step button").forEach((b) => (b.onclick = () => bump(b.dataset.k, +b.dataset.d)));
+  paint(); draw();
+}
+
+function bump(key, delta) { answer[key] = Math.max(0, Math.min(50, answer[key] + delta)); paint(); }
+function paint() {
+  const item = queue[index]; if (!item) return;
+  for (const key of ["in", "out"]) {
+    const out = $("o-" + key); out.textContent = answer[key];
+    out.className = answer[key] !== item["system_" + key] ? "diff" : "";
+  }
+}
+
+function draw() {
+  const item = queue[index]; if (!item) return;
+  for (const [view, strip] of Object.entries(item.strips)) {
+    const canvas = $("c-" + view), image = images[view];
+    if (!canvas || !image || !image.complete) continue;
+    let frame = 0;
+    for (let i = 0; i < strip.times.length; i++) if (strip.times[i] <= clock) frame = i;
+    const [w, h] = strip.cell;
+    canvas.getContext("2d").drawImage(image, (frame % strip.columns) * w, Math.floor(frame / strip.columns) * h, w, h, 0, 0, w, h);
+  }
+  const scrub = $("scrub"); if (scrub && playing) scrub.value = clock;
+}
+
+function tick(now) {
+  const scrub = $("scrub");
+  if (playing && scrub) {
+    clock += (now - last) / 1000;
+    if (clock > +scrub.max + 0.6) clock = 0;
+    draw();
+  }
+  last = now; requestAnimationFrame(tick);
+}
+
+async function save() {
+  const item = queue[index]; if (!item) return;
+  const note = $("note").value.trim() || null;
+  const response = await fetch(`${api}activity/${item.id}/label`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entries: answer.in, exits: answer.out, note }),
+  });
+  if (!response.ok) { alertBar("Could not save. Try again."); return; }
+  showScore(await response.json());
+  item.labelled_at = new Date().toISOString(); item.label_in = answer.in; item.label_out = answer.out;
+  if ($("state").value === "unlabelled") { queue.splice(index, 1); if (index >= queue.length) index = Math.max(0, queue.length - 1); }
+  else index = Math.min(index + 1, queue.length - 1);
+  show();
+}
+function alertBar(text) { $("position").textContent = text; }
+
+$("state").onchange = load;
+$("prev").onclick = () => { index = Math.max(0, index - 1); show(); };
+$("next").onclick = () => { index = Math.min(queue.length - 1, index + 1); show(); };
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" && e.target.type === "text") return;
+  const scrub = $("scrub");
+  if (e.key === "Enter") { e.preventDefault(); save(); }
+  else if (e.key === "n" || e.key === "N") { answer = { in: 0, out: 0 }; save(); }
+  else if (e.key === "i" || e.key === "I") bump("in", e.shiftKey ? -1 : 1);
+  else if (e.key === "o" || e.key === "O") bump("out", e.shiftKey ? -1 : 1);
+  else if (e.key === " ") { e.preventDefault(); playing = !playing; }
+  else if (scrub && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    e.preventDefault(); playing = false;
+    clock = Math.max(0, Math.min(+scrub.max, clock + (e.key === "ArrowRight" ? 0.17 : -0.17)));
+    scrub.value = clock; draw();
+  }
+});
+requestAnimationFrame(tick);
+load();
+</script>
+</body>
+</html>

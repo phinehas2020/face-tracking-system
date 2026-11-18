@@ -22,6 +22,7 @@ class DualLiveSession(LiveSession):
                 "event_id": self.event_id,
                 "camera_id": "live-facing",
                 "count_passages": False,
+                "activity_capture": self.config.activity_capture,
             }
         )
         self.facing = LiveSession(store, config_path, model_path, facing)
@@ -42,6 +43,8 @@ class DualLiveSession(LiveSession):
     def start(self):
         super().start(start_workers=False)
         self.facing.start(start_workers=False)
+        if self.activity and self.facing.frame_ring:
+            self.activity.rings["facing"] = self.facing.frame_ring
         with self.lock:
             self.facing.face_registry.templates = self.face_registry.templates
             self.facing.face_registry.labels = self.face_registry.labels

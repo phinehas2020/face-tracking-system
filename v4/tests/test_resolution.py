@@ -386,3 +386,22 @@ def test_calibration_from_tracking_constraints(tmp_path):
     assert max(impostors) < boundary + 0.15 and 0.15 < boundary < 0.6
     # A labelled fit is the only kind reported as calibrated.
     assert resolution.fit_calibration(scores, labels).calibrated is True
+
+
+def test_a_face_stored_under_its_body_and_face_track_counts_once(tmp_path):
+    """The live registry writes one face sample under two track keys."""
+    store = make_store(tmp_path)
+    rng = np.random.default_rng(31)
+    person = unit(rng)
+    first, second = near(rng, person, 0.97), near(rng, person, 0.97)
+    for key, sample, start in (
+        ("ns:track-1", first, 0), ("ns:face-track-1", first, 0), ("ns:face-track-2", second, 30),
+    ):
+        save_tracklet(store, EVENT, CAMERA + EVENT, key, FACE_MODEL, [sample], [0.9],
+                      at(start), at(start), None, "collecting")
+    clusters = resolution.resolve(store, EVENT).report["clusters"]
+    # Three rows, two distinct samples: below the three-sample bar for a person.
+    assert clusters["total"] == 1 and clusters["established"] == 0
+    save_tracklet(store, EVENT, CAMERA + EVENT, "ns:face-track-3", FACE_MODEL,
+                  [near(rng, person, 0.97)], [0.9], at(60), at(60), None, "collecting")
+    assert resolution.resolve(store, EVENT).report["clusters"]["established"] == 1

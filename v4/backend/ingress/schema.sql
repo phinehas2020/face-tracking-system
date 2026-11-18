@@ -189,6 +189,27 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS activity_windows (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    camera_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    duration_seconds REAL NOT NULL,
+    cause TEXT NOT NULL CHECK (cause IN ('passage', 'people', 'motion')),
+    system_in INTEGER NOT NULL,
+    system_out INTEGER NOT NULL,
+    passages TEXT NOT NULL DEFAULT '[]',
+    peak_people INTEGER NOT NULL DEFAULT 0,
+    strips TEXT NOT NULL DEFAULT '{}',
+    label_in INTEGER,
+    label_out INTEGER,
+    label_note TEXT,
+    labelled_by TEXT,
+    labelled_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_event_time ON activity_windows(event_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_passages_event_time ON passages(event_id, observed_at);
 CREATE INDEX IF NOT EXISTS idx_passages_identity ON passages(identity_id);
 CREATE INDEX IF NOT EXISTS idx_links_event_status ON identity_links(event_id, status);

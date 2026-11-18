@@ -15,6 +15,15 @@ The old frame-level matcher is preserved at the repository root for reference. v
 - **Temporary-by-construction storage:** every record and file is scoped to an event. Purge uses an exact confirmation, SQLite secure-delete, WAL truncation, vacuuming, and a bounded event directory.
 - **Deterministic operation:** video manifests include SHA-256 hashes so the same three source files and model bundle produce a comparable rehearsal run.
 
+## Checking the live count against the truth
+
+With `"activity_capture": true` in the camera file, the station saves a short
+two-camera strip of every active moment at the door. Open
+`http://127.0.0.1:18046/api/live/review` through the preview tunnel, say how many
+people really went in and out, and read the result at `/api/live/scorecard` or
+with `.venv/bin/ingress scorecard <event-id>`. See
+`docs/activity-scorecard-2026-11-18.md`.
+
 ## Start it
 
 From the repository root:

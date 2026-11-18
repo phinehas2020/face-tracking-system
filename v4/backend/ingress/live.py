@@ -65,6 +65,13 @@ class LiveControl(BaseModel):
     paused: bool
 
 
+class ActivityLabel(BaseModel):
+    entries: int = Field(ge=0, le=50)
+    exits: int = Field(ge=0, le=50)
+    actor: str = Field(default="operator", min_length=1, max_length=80)
+    note: str | None = Field(default=None, max_length=300)
+
+
 @dataclass
 class CrossingState:
     side: int = 0
@@ -168,6 +175,9 @@ class CameraConfig:
     # Position evidence for the cross-camera link: "off", "shadow" or "on".
     association_zone: str = "off"
     association_zone_min_samples: int = 20
+    # Save a short film strip of every active moment at the door for labelling.
+    activity_capture: bool = False
+    activity_capture_max_mb: int = 600
 
     @property
     def url(self) -> str:
@@ -227,6 +237,25 @@ class LiveSession:
         self.face_previews: dict[str, bytes] = {}
         self.face_preview_quality: dict[str, float] = {}
         self.active_faces: list[dict] = []
+        self.frame_ring = None
+        self.activity = None
+        self._stage_ms: dict[str, dict[str, float]] = {"idle": {}, "with_people": {}}
+        self._busy_frames = 0
+        self._busy_seconds = 0.0
+
+    def _time_stages(self, busy: bool, period: float | None, **stages: float) -> None:
+        """Running mean of where a frame's time goes, split by whether anyone is in view."""
+        bucket = self._stage_ms["with_people" if busy else "idle"]
+        for name, seconds in stages.items():
+            value = seconds * 1000
+            bucket[name] = round(bucket[name] * 0.95 + value * 0.05, 1) if name in bucket else value
+        if busy and period is not None:
+            self._busy_frames += 1
+            self._busy_seconds += min(period, 1.0)
+        self.runtime["stage_ms"] = {key: dict(value) for key, value in self._stage_ms.items()}
+        if self._busy_seconds:
+            self.runtime["fps_with_people"] = round(self._busy_frames / self._busy_seconds, 1)
+            self.runtime["frames_with_people"] = self._busy_frames
 
     def _new_counter(self):
         if self.calibration.counting_mode == "trajectory":
@@ -270,6 +299,18 @@ class LiveSession:
             self.counter = self._new_counter()
         self.face_registry = FaceRegistry(self.store, self.event_id, self.camera_id)
         self.face_previews, self.face_preview_quality = self.store.load_face_previews(self.event_id)
+        if self.config.activity_capture and not getattr(self, "is_replay", False):
+            from .activity import ActivityRecorder, FrameRing
+
+            self.frame_ring = FrameRing()
+            if self.config.count_passages:
+                self.activity = ActivityRecorder(
+                    self.store,
+                    self.event_id,
+                    self.camera_id,
+                    {"side": self.frame_ring},
+                    max_bytes=self.config.activity_capture_max_mb * 1024 * 1024,
+                )
         if start_workers:
             self._start_workers()
 
@@ -283,6 +324,8 @@ class LiveSession:
         self.stop_event.set()
         if self.face_worker:
             self.face_worker.stop()
+        if self.activity:
+            self.activity.stop()
         for thread in self.threads:
             thread.join(timeout=7)
         if self.face_registry:
@@ -326,13 +369,15 @@ class LiveSession:
                             raise ValueError("Invalid capture packet")
                         if len(buffer) < length + 12:
                             break
+                        encoded = bytes(buffer[12 : 12 + length])
                         frame = cv2.imdecode(
-                            np.frombuffer(bytes(buffer[12 : 12 + length]), dtype=np.uint8),
-                            cv2.IMREAD_COLOR,
+                            np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR
                         )
                         del buffer[: 12 + length]
                         if frame is None:
                             continue
+                        if self.frame_ring:
+                            self.frame_ring.push(captured_at, encoded)
                         last_frame = time.monotonic()
                         with self.lock:
                             self.frame = frame
@@ -412,6 +457,10 @@ class LiveSession:
                 ),
             )
             recount(db, self.event_id)
+        if self.activity:
+            self.activity.passage(
+                passage_id, direction, captured_at if captured_at is not None else time.monotonic()
+            )
         if hasattr(self, "association"):
             # A crossing that already has a face is registered only as a labelled
             # check of the position evidence; the coordinator never links it.
@@ -595,21 +644,23 @@ class LiveSession:
                     ok, jpeg = cv2.imencode(".jpg", crop)
                     if ok:
                         self._save_face_preview(face.identity_id, jpeg.tobytes(), detected.quality)
-        self.tracking_history.append(
-            {
-                "source": "faces",
-                "time": face_observed_at,
-                "tracks": [],
-                "faces": [
-                    {
-                        "quality": round(face.quality, 3),
-                        "width": round(face.bbox[2] - face.bbox[0]),
-                        "track": face_keys.get(index),
-                    }
-                    for index, face in enumerate(detections)
-                ],
-            }
-        )
+        if detections:
+            # Empty scans used to flush every real track out of this short history.
+            self.tracking_history.append(
+                {
+                    "source": "faces",
+                    "time": face_observed_at,
+                    "tracks": [],
+                    "faces": [
+                        {
+                            "quality": round(face.quality, 3),
+                            "width": round(face.bbox[2] - face.bbox[0]),
+                            "track": face_keys.get(index),
+                        }
+                        for index, face in enumerate(detections)
+                    ],
+                }
+            )
         return body_face_refs, face_boxes
 
     @staticmethod
@@ -699,6 +750,7 @@ class LiveSession:
             last_sequence = last_generation = -1
             last_finished = 0.0
             last_face_scan = -1.0
+            last_face_submit = last_face_seen = -math.inf
             face_boxes = []
             namespace = uuid.uuid4().hex[:8]
             while not self.stop_event.is_set():
@@ -748,6 +800,11 @@ class LiveSession:
                     for track in tracks
                     if self._valid_box(track.bbox, frame_width, frame_height)
                 ]
+                tracked_at = time.monotonic()
+                if self.activity and not paused:
+                    self.activity.observe(
+                        tracking_time, observed_at, len(tracks), frame, self.calibration
+                    )
                 detector_device = getattr(tracker, "selected_device", "cpu")
                 if detector_device != last_detector_device:
                     # A backend fallback restarts model tracking and may reuse raw IDs.
@@ -786,6 +843,7 @@ class LiveSession:
                         for raw, vector in raw_features.items()
                         if raw in continuity.raw_ids
                     }
+                appearance_at = time.monotonic()
                 face_batches = []
                 faces = None
                 detections = []
@@ -814,19 +872,30 @@ class LiveSession:
                             and state.identity_id
                             and state.state != "conflict"
                         }
-                        self.face_worker.submit(
-                            FaceRequest(
-                                frame,
-                                tracks,
-                                hints,
-                                sequence,
-                                generation,
-                                frame_time,
-                                observed_at or utc_now(),
+                        # An empty view is scanned twice a second, not on every frame: a
+                        # face the body detector missed is still found, and the face
+                        # model stops competing with the detector when nobody is there.
+                        if (
+                            tracks
+                            or tracking_time - last_face_seen <= 2.0
+                            or tracking_time - last_face_submit >= 0.5
+                        ):
+                            last_face_submit = tracking_time
+                            self.face_worker.submit(
+                                FaceRequest(
+                                    frame,
+                                    tracks,
+                                    hints,
+                                    sequence,
+                                    generation,
+                                    frame_time,
+                                    observed_at or utc_now(),
+                                )
                             )
-                        )
                         while result := self.face_worker.take(generation, time.monotonic()):
                             face_batches.append(result)
+                            if result.detections:
+                                last_face_seen = tracking_time
                             self.runtime["face_inference_ms"] = round(result.latency_ms, 1)
                         self.runtime["face_delivery"] = dict(self.face_worker.metrics)
                 elif not paused and tracking_time - last_face_scan >= scan_interval - 1e-8:
@@ -839,6 +908,7 @@ class LiveSession:
                     faces = associate_faces(detections, tracks, hints)
                     face_keys = face_continuity.update(detections, tracking_time)
                     last_face_scan = tracking_time
+                faces_at = time.monotonic()
                 display = frame.copy()
                 height, width = display.shape[:2]
                 with self.lock:
@@ -1050,6 +1120,20 @@ class LiveSession:
                             / max(self._fps_times[-1] - self._fps_times[0], 0.001),
                             1,
                         )
+                    self._time_stages(
+                        bool(tracks),
+                        finished - last_finished if last_finished else None,
+                        detect_track=tracked_at - started,
+                        appearance=appearance_at - tracked_at,
+                        faces=faces_at - appearance_at,
+                        apply_render=finished - faces_at,
+                        total=finished - started,
+                        # Time between frames that is not model work: the pacing
+                        # sleep plus waiting for the camera to deliver a frame.
+                        between_frames=started - last_finished if last_finished else 0.0,
+                    )
+                    if self.activity:
+                        self.runtime["activity_capture"] = dict(self.activity.metrics)
                     if second_look:
                         self.runtime["second_look"] = dict(second_look.metrics)
                     if crowd_mode:
@@ -1187,6 +1271,59 @@ def live_router() -> APIRouter:
             if not jpeg:
                 raise HTTPException(404, "No saved preview for this visitor")
             return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @router.get("/activity")
+    def activity_windows(request: Request, state: str = "unlabelled", limit: int = 50):
+        from . import activity
+
+        if state not in {"unlabelled", "labelled", "all"}:
+            raise HTTPException(422, "state must be unlabelled, labelled or all")
+        value = session(request)
+        return {
+            "windows": activity.list_windows(
+                value.store, value.event_id, state, max(1, min(limit, 500))
+            ),
+            "scorecard": activity.scorecard(value.store, value.event_id),
+            "capturing": value.activity is not None,
+        }
+
+    @router.get("/activity/{window_id}/{view}.jpg")
+    def activity_strip(request: Request, window_id: str, view: str):
+        from . import activity
+
+        value = session(request)
+        path = activity.strip_path(value.store, value.event_id, window_id, view)
+        if path is None:
+            raise HTTPException(404, "No stored strip for this window")
+        return Response(
+            path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"}
+        )
+
+    @router.post("/activity/{window_id}/label")
+    def activity_label(request: Request, window_id: str, data: ActivityLabel):
+        from . import activity
+
+        value = session(request)
+        if not activity.label_window(
+            value.store, value.event_id, window_id, data.entries, data.exits, data.actor, data.note
+        ):
+            raise HTTPException(404, "Unknown activity window")
+        return activity.scorecard(value.store, value.event_id)
+
+    @router.get("/scorecard")
+    def scorecard(request: Request):
+        from . import activity
+
+        value = session(request)
+        return activity.scorecard(value.store, value.event_id)
+
+    @router.get("/review", include_in_schema=False)
+    def review_page():
+        return Response(
+            Path(__file__).with_name("review.html").read_text(),
+            media_type="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @router.put("/calibration")
     def calibration(request: Request, data: LiveCalibration):
