@@ -22,6 +22,7 @@ export function LiveView() {
   const [frameError, setFrameError] = useState(false);
   const objectUrl = useRef(null);
   const [history, setHistory] = useState(null);
+  const [shadow, setShadow] = useState(null);
 
   useEffect(() => {
     document.title = "Ingress · Live camera test";
@@ -102,6 +103,8 @@ export function LiveView() {
       // A station running older software has no history; the chart is then left out.
       try { const next = await api("history?hours=6&bucket_minutes=10"); if (!stopped) setHistory(next); }
       catch { if (!stopped) setHistory(null); }
+      try { const next = await api("shadow"); if (!stopped) setShadow(next); }
+      catch { if (!stopped) setShadow(null); }
       if (!stopped) timer = setTimeout(poll, 20000);
     };
     poll();
@@ -141,7 +144,7 @@ export function LiveView() {
   };
   const runtimeLabel = (runtime) => `${runtime?.detector_device === "mps" ? "Apple GPU" : runtime?.detector_device || "Loading"} detection · ${runtime?.face_provider === "CoreMLExecutionProvider" ? "CoreML" : runtime?.face_provider === "CPUExecutionProvider" ? "CPU" : "Loading"} face analysis`;
 
-  if (dual) return <LiveConsole status={status} error={error} frame={frame} facingFrame={facingFrame} connected={connected} history={history} calibration={calibration} setCalibration={setCalibration} mutate={mutate} busy={busy} dirty={dirty} drawingGate={drawingGate} setDrawingGate={setDrawingGate} firstGatePoint={firstGatePoint} setFirstGatePoint={setFirstGatePoint} chooseGatePoint={chooseGatePoint} entryDirection={entryDirection} />;
+  if (dual) return <LiveConsole status={status} error={error} frame={frame} facingFrame={facingFrame} connected={connected} history={history} shadow={shadow} calibration={calibration} setCalibration={setCalibration} mutate={mutate} busy={busy} dirty={dirty} drawingGate={drawingGate} setDrawingGate={setDrawingGate} firstGatePoint={firstGatePoint} setFirstGatePoint={setFirstGatePoint} chooseGatePoint={chooseGatePoint} entryDirection={entryDirection} />;
 
   return <main className="live-shell">
     <header className="live-header">

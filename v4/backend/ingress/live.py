@@ -179,6 +179,9 @@ class CameraConfig:
     # Save a short film strip of every active moment at the door for labelling.
     activity_capture: bool = False
     activity_capture_max_mb: int = 600
+    # Save aligned face crops for a shadow recognizer running in its own process.
+    face_shadow: bool = False
+    face_shadow_max_mb: int = 500
     rtsp_path: str | None = None
 
     @property
@@ -242,6 +245,7 @@ class LiveSession:
         self.active_faces: list[dict] = []
         self.frame_ring = None
         self.activity = None
+        self.face_spool = None
         self._stage_ms: dict[str, dict[str, float]] = {"idle": {}, "with_people": {}}
         self._busy_frames = 0
         self._busy_seconds = 0.0
@@ -314,6 +318,14 @@ class LiveSession:
                     {"side": self.frame_ring},
                     max_bytes=self.config.activity_capture_max_mb * 1024 * 1024,
                 )
+        if self.config.face_shadow and not getattr(self, "is_replay", False):
+            from .face_spool import FOLDER, FaceSpool
+
+            self.face_spool = FaceSpool(
+                self.store._event_directory(self.event_id) / FOLDER,
+                self.camera_id,
+                self.config.face_shadow_max_mb * 1024 * 1024,
+            )
         if start_workers:
             self._start_workers()
 
@@ -329,6 +341,8 @@ class LiveSession:
             self.face_worker.stop()
         if self.activity:
             self.activity.stop()
+        if self.face_spool:
+            self.face_spool.stop()
         for thread in self.threads:
             thread.join(timeout=7)
         if self.face_registry:
@@ -747,12 +761,17 @@ class LiveSession:
                         provider=self.config.face_provider,
                         det_size=self.config.face_det_size,
                         person_rois=self.config.face_person_rois,
+                        tap=self.face_spool.offer if self.face_spool else None,
                     )
                 )
                 self.face_worker.start()
                 face_encoder = None
             else:
-                face_encoder = LiveFaceEncoder()
+                face_encoder = (
+                    LiveFaceEncoder(tap=self.face_spool.offer)
+                    if self.face_spool
+                    else LiveFaceEncoder()
+                )
                 with self.lock:
                     self.face_status = "ready"
             registry = self.face_registry
@@ -1149,6 +1168,8 @@ class LiveSession:
                     )
                     if self.activity:
                         self.runtime["activity_capture"] = dict(self.activity.metrics)
+                    if self.face_spool:
+                        self.runtime["face_shadow"] = dict(self.face_spool.metrics)
                     if second_look:
                         self.runtime["second_look"] = dict(second_look.metrics)
                     if crowd_mode:
@@ -1295,6 +1316,19 @@ def live_router() -> APIRouter:
                 for start, counts in buckets.items()
             ],
         }
+
+    @router.get("/shadow")
+    def shadow(request: Request):
+        """What the shadow recognizers make of this event's faces. No templates."""
+        from .face_spool import FOLDER
+
+        value = session(request)
+        path = value.store._event_directory(value.event_id) / FOLDER / "report.json"
+        try:
+            report = json.loads(path.read_text())
+        except (OSError, ValueError):
+            report = None
+        return {"enabled": bool(value.face_spool), "report": report}
 
     @router.get("/frame.jpg")
     def frame(request: Request, camera: str = "side"):

@@ -52,6 +52,17 @@
 .console-health dt { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
 .console-health dd { margin: 3px 0 0; font: 12px "IBM Plex Mono", monospace; }
 
+.console-shadow h2 { font-weight: 400; font-size: 11px; color: var(--muted); }
+.console-shadow h2 strong { font-size: 13px; font-weight: 550; color: var(--ink); }
+.console-shadow h2 em { margin-left: auto; font-style: normal; font-size: 11px; padding: 3px 8px; background: var(--orange-soft); color: #a34a1c; }
+.console-shadow h2 em.ok { background: var(--teal-soft); color: #0d635e; }
+.console-shadow-note { margin: 8px 0 0; font-size: 11px; color: var(--muted); }
+.console-shadow table { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 12px; }
+.console-shadow th, .console-shadow td { padding: 7px 10px 7px 0; text-align: left; border-top: 1px solid var(--line); font-weight: 400; }
+.console-shadow thead th { border-top: none; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.console-shadow tbody th { font-weight: 550; white-space: nowrap; }
+.console-shadow tbody th span { margin-left: 8px; font: 10px "IBM Plex Mono", monospace; text-transform: uppercase; color: var(--muted); }
+.console-shadow td { font-family: "IBM Plex Mono", monospace; font-size: 11px; }
 .console-line h2 em { margin-left: auto; font-style: normal; font-size: 11px; font-weight: 500; padding: 3px 8px; background: var(--orange-soft); color: #a34a1c; }
 .console-line-summary { margin: 8px 0 12px; font-size: 12px; color: var(--muted); }
 .console-line-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

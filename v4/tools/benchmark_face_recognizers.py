@@ -157,88 +157,110 @@ def _load_cvl(path: Path, aligner: bool = False):
         os.chdir(cwd)
 
 
+CVL_REPOS = {"adaface_ir101_wf12m": "cvlface_adaface_ir101_webface12m",
+             "kprpe_wf12m": "cvlface_adaface_vit_base_kprpe_webface12m",
+             "kprpe_wf4m": "cvlface_adaface_vit_base_kprpe_webface4m"}
+
+
+class Embedder:
+    """One recognizer, loaded once: aligned BGR crops in, unit-length templates out."""
+
+    def __init__(self, name: str, root: Path, device: str = "cpu"):
+        self.name, self.device = name, device
+        self.base, _, self.variant = name.partition("-")
+        root = Path(root).resolve()
+        self.onnx = self.aligner = self.model = None
+        if name == "buffalo_l":
+            self.onnx = root / "insightface/models/buffalo_l/w600k_r50.onnx"
+        elif name == "antelopev2":
+            self.onnx = list((root / "insightface/models/antelopev2").rglob("glintr100.onnx"))[0]
+        else:
+            if self.variant == "dfa":
+                self.aligner = _load_cvl(root / "cvlface_DFA_mobilenet", aligner=True).to(device)
+            self.model = _load_cvl(root / CVL_REPOS[self.base]).to(device)
+
+    def __call__(self, aligned: np.ndarray, kps_aligned: np.ndarray, loose: np.ndarray | None = None) -> np.ndarray:
+        if self.onnx is not None:
+            emb = _onnx_embed(self.onnx, aligned)
+        else:
+            import torch
+            to_tensor = lambda a: ((torch.from_numpy(np.ascontiguousarray(a[..., ::-1])).float() / 255 - 0.5) / 0.5).permute(0, 3, 1, 2).contiguous()
+            kps_aligned = np.asarray(kps_aligned, dtype=np.float32)
+            out = []
+            with torch.no_grad():
+                for i in range(0, len(aligned), 32):
+                    if self.variant == "dfa":
+                        ax, _orig, al, *_ = self.aligner(to_tensor(loose[i:i + 32]).to(self.device))
+                        y = self.model(ax, al)
+                    elif self.base.startswith("kprpe"):
+                        y = self.model(to_tensor(aligned[i:i + 32]).to(self.device), torch.from_numpy(kps_aligned[i:i + 32]).to(self.device))
+                    else:
+                        y = self.model(to_tensor(aligned[i:i + 32]).to(self.device))
+                    if isinstance(y, (tuple, list)):
+                        y = y[0]
+                    out.append(y.float().cpu().numpy())
+            emb = np.concatenate(out)
+        return (emb / np.linalg.norm(emb, axis=1, keepdims=True).clip(1e-9)).astype(np.float32)
+
+
 def embed(args) -> None:
     import torch
     run = Path(args.run)
     data = np.load(run / "faces.npz")
-    aligned, loose, loose_kps = data["aligned"], data["loose"], data["loose_kps"]
     rows = json.loads((run / "faces.json").read_text())["rows"]
-    root = Path(args.models_root).resolve()
-    name = args.model
-    if name == "buffalo_l":
-        emb = _onnx_embed(root / "insightface/models/buffalo_l/w600k_r50.onnx", aligned)
-    elif name == "antelopev2":
-        hits = list((root / "insightface/models/antelopev2").rglob("glintr100.onnx"))
-        emb = _onnx_embed(hits[0], aligned)
-    else:
-        device = "mps" if torch.backends.mps.is_available() and not args.cpu else "cpu"
-        base, _, variant = name.partition("-")
-        repo = {"adaface_ir101_wf12m": "cvlface_adaface_ir101_webface12m",
-                "kprpe_wf12m": "cvlface_adaface_vit_base_kprpe_webface12m",
-                "kprpe_wf4m": "cvlface_adaface_vit_base_kprpe_webface4m"}[base]
-        to_tensor = lambda a: ((torch.from_numpy(np.ascontiguousarray(a[..., ::-1])).float() / 255 - 0.5) / 0.5).permute(0, 3, 1, 2).contiguous()
-        kps_al = np.asarray([r["kps_aligned"] for r in rows], dtype=np.float32)
-        if variant == "dfa":
-            aligner = _load_cvl(root / "cvlface_DFA_mobilenet", aligner=True).to(device)
-        model = _load_cvl(root / repo).to(device)
-        out = []
-        with torch.no_grad():
-            for i in range(0, len(aligned), 32):
-                if variant == "dfa":
-                    ax, _orig, al, *_ = aligner(to_tensor(loose[i:i + 32]).to(device))
-                    y = model(ax, al)
-                elif base.startswith("kprpe"):
-                    y = model(to_tensor(aligned[i:i + 32]).to(device), torch.from_numpy(kps_al[i:i + 32]).to(device))
-                else:
-                    y = model(to_tensor(aligned[i:i + 32]).to(device))
-                if isinstance(y, (tuple, list)):
-                    y = y[0]
-                out.append(y.float().cpu().numpy())
-        emb = np.concatenate(out)
-    emb = emb / np.linalg.norm(emb, axis=1, keepdims=True).clip(1e-9)
-    np.save(run / f"emb-{name}.npy", emb.astype(np.float32))
-    print(name, emb.shape, flush=True)
+    device = "mps" if torch.backends.mps.is_available() and not args.cpu else "cpu"
+    emb = Embedder(args.model, Path(args.models_root), device)(
+        data["aligned"], np.asarray([r["kps_aligned"] for r in rows], dtype=np.float32), data["loose"])
+    np.save(run / f"emb-{args.model}.npy", emb)
+    print(args.model, emb.shape, flush=True)
 
 
 # ------------------------------------------------------------------ score
-def score(args) -> None:
-    run = Path(args.run)
-    rows = json.loads((run / "faces.json").read_text())["rows"]
-    n = len(rows)
-    yaw = np.array([r["yaw"] for r in rows]); track = np.array([r["track"] for r in rows])
-    t = np.array([r["t"] for r in rows]); video = np.array([r["video"] for r in rows])
-    frame = np.array([r["frame"] for r in rows]); width = np.array([r["width"] for r in rows])
-    keep = width >= args.min_width
+def score_arrays(yaw, track, t, video, frame, width, embeddings: dict, *, min_gap: float = 0.4,
+                 max_per_track: int = 40, min_width: float = 32.0, min_impostors: int = 300) -> dict:
+    """Score recognizers on faces described by parallel arrays; embeddings maps name -> (n, 512)."""
+    yaw, track, t = np.asarray(yaw, dtype=float), np.asarray(track), np.asarray(t, dtype=float)
+    video, frame, width = np.asarray(video), np.asarray(frame), np.asarray(width, dtype=float)
+    keep = width >= min_width
     rng = np.random.default_rng(0)
     gen, imp = [], []
     for tr in np.unique(track[keep]):
         idx = np.flatnonzero((track == tr) & keep)
-        if len(idx) > args.max_per_track:
-            idx = np.sort(rng.choice(idx, args.max_per_track, replace=False))
+        if len(idx) > max_per_track:
+            idx = np.sort(rng.choice(idx, max_per_track, replace=False))
         for a_pos, a in enumerate(idx):
             for b in idx[a_pos + 1:]:
-                if abs(t[a] - t[b]) >= args.min_gap:
+                if abs(t[a] - t[b]) >= min_gap:
                     gen.append((a, b))
     key = video.astype(np.int64) * 10_000_000 + frame
-    for k in np.unique(key[keep]):
-        idx = np.flatnonzero((key == k) & keep)
+    order = np.argsort(key, kind="stable")
+    order = order[keep[order]]
+    for idx in np.split(order, np.flatnonzero(np.diff(key[order])) + 1) if len(order) else []:
         for a_pos, a in enumerate(idx):
             for b in idx[a_pos + 1:]:
                 imp.append((a, b))
-    gen = np.array(gen).reshape(-1, 2); imp = np.array(imp).reshape(-1, 2)
+    gen = np.array(gen, dtype=int).reshape(-1, 2); imp = np.array(imp, dtype=int).reshape(-1, 2)
     ayaw = np.abs(yaw)
     def groups(pairs):
         hi = np.maximum(ayaw[pairs[:, 0]], ayaw[pairs[:, 1]]); lo = np.minimum(ayaw[pairs[:, 0]], ayaw[pairs[:, 1]])
         return np.array([bucket(v) for v in hi]), lo
     gb, glo = groups(gen) if len(gen) else (np.zeros(0, int), np.zeros(0))
     ib, _ = groups(imp) if len(imp) else (np.zeros(0, int), np.zeros(0))
+
+    def cell(s, pool):
+        out = {"n": int(len(s))}
+        if len(s):
+            out["median"] = round(float(np.median(s)), 3)
+            if len(pool):
+                for far in (0.01, 0.001):
+                    out[f"tar@far{far}"] = round(float((s > float(np.quantile(pool, 1 - far))).mean()), 3)
+                ranked = np.sort(pool[:: max(1, len(pool) // 2000)])
+                out["auc"] = round(float(np.searchsorted(ranked, s, side="left").mean() / len(ranked)), 4)
+        return out
+
     report = {"faces": int(keep.sum()), "tracks": int(len(np.unique(track[keep]))),
               "genuine_pairs": len(gen), "impostor_pairs": len(imp), "models": {}}
-    for path in sorted(run.glob("emb-*.npy")):
-        name = path.stem[4:]
-        e = np.load(path)
-        if len(e) != n:
-            continue
+    for name, e in embeddings.items():
         g = (e[gen[:, 0]] * e[gen[:, 1]]).sum(1) if len(gen) else np.zeros(0)
         i = (e[imp[:, 0]] * e[imp[:, 1]]).sum(1) if len(imp) else np.zeros(0)
         entry = {"impostor": {"n": len(i)}, "buckets": {}}
@@ -246,25 +268,31 @@ def score(args) -> None:
             entry["impostor"].update(p50=round(float(np.percentile(i, 50)), 3), p99=round(float(np.percentile(i, 99)), 3),
                                      max=round(float(i.max()), 3))
         for b, label in enumerate(YAW_NAMES):
-            row = {}
             ib_scores = i[ib == b]
-            pool = ib_scores if len(ib_scores) >= args.min_impostors else i
-            row["impostor_n"] = int(len(ib_scores)); row["impostor_basis"] = "bucket" if pool is ib_scores else "all"
-            for label2, mask in (("any", gb == b), ("frontal_to_turned", (gb == b) & (glo <= 20))):
-                s = g[mask]
-                cell = {"n": int(len(s))}
-                if len(s):
-                    cell["median"] = round(float(np.median(s)), 3)
-                    if len(pool):
-                        for far in (0.01, 0.001):
-                            thr = float(np.quantile(pool, 1 - far))
-                            cell[f"tar@far{far}"] = round(float((s > thr).mean()), 3)
-                        cell["auc"] = round(float((s[:, None] > pool[None, :: max(1, len(pool) // 2000)]).mean()), 4)
-                row[label2] = cell
-            entry["buckets"][label] = row
+            pool = ib_scores if len(ib_scores) >= min_impostors else i
+            entry["buckets"][label] = {
+                "impostor_n": int(len(ib_scores)), "impostor_basis": "bucket" if pool is ib_scores else "all",
+                "any": cell(g[gb == b], pool), "frontal_to_turned": cell(g[(gb == b) & (glo <= 20)], pool)}
+        # The live question in two numbers: both faces frontal, and a frontal face against a turned one.
+        entry["summary"] = {"frontal": cell(g[gb == 0], i), "turned": cell(g[(gb >= 1) & (glo <= 20)], i)}
         report["models"][name] = entry
+    return report
+
+
+def score(args) -> None:
+    run = Path(args.run)
+    rows = json.loads((run / "faces.json").read_text())["rows"]
+    embeddings = {}
+    for path in sorted(run.glob("emb-*.npy")):
+        e = np.load(path)
+        if len(e) == len(rows):
+            embeddings[path.stem[4:]] = e
+    column = lambda name: np.array([r[name] for r in rows])
+    report = score_arrays(column("yaw"), column("track"), column("t"), column("video"), column("frame"),
+                          column("width"), embeddings, min_gap=args.min_gap, max_per_track=args.max_per_track,
+                          min_width=args.min_width, min_impostors=args.min_impostors)
     (run / "score.json").write_text(json.dumps(report, indent=1))
-    print(f"faces {report['faces']}  tracks {report['tracks']}  genuine pairs {len(gen)}  same-frame impostor pairs {len(imp)}")
+    print(f"faces {report['faces']}  tracks {report['tracks']}  genuine pairs {report['genuine_pairs']}  same-frame impostor pairs {report['impostor_pairs']}")
     for name, entry in report["models"].items():
         print(f"\n{name}   impostor {entry['impostor']}")
         print(f"  {'yaw':>6} {'gen n':>7} {'median':>7} {'TAR@1%':>7} {'TAR@.1%':>8} {'AUC':>7} | {'f2t n':>6} {'median':>7} {'TAR@1%':>7} {'AUC':>7} | imp n ({'basis'})")

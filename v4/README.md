@@ -284,6 +284,32 @@ agent with automatic process restart. Existing event counts and templates are
 preserved. Test an actual enter/leave/re-enter sequence after camera placement
 or side-line calibration changes.
 
+## Shadow recognizers beside the live one
+
+Set `"face_shadow": true` in the camera file (`"face_shadow_max_mb"`, default 500,
+bounds the folder) and the live recognizer saves an aligned 112 px crop of every face
+with a readable pose into `DATA/events/EVENT/face-shadow/`, including the turned faces
+its own pose gate rejects. Crops are rate-limited per followed face, and the folder is
+purged with the event. Live recognition, visitors and counts are unchanged.
+
+`tools/face_shadow.py` is a separate CPU-only, low-priority process that embeds those
+crops with other recognizers (AdaFace IR101 and AdaFace ViT KP-RPE from CVLFace) and
+writes `report.json`, served at `/api/live/shadow` and shown on the station page as
+"Recognizer comparison". It needs `omegaconf fvcore safetensors timm easydict` and the
+CVLFace model folders (`pretrained_model/` and `models/`) under `--models-root`; keep
+them in their own virtual environment so the station's packages are never touched.
+
+```bash
+python tools/face_shadow.py --spool DATA/events/EVENT/face-shadow \
+  --models-root MODELS --models adaface_ir101_wf12m,kprpe_wf12m-scrfd
+```
+
+The report scores each recognizer as `tools/benchmark_face_recognizers.py` does: two
+crops of one followed face should match, two faces in one picture should not. Match
+rates and people counts are withheld until 300 different-person pairs have been seen;
+before that only similarities are shown. The same folder can be scored offline with
+any other recognizer, because the crops are kept.
+
 ## YOLO26m with a live RF-DETR second look
 
 Set the launch service's `INGRESS_LIVE_MODEL` to an explicit local YOLO26m weights file.

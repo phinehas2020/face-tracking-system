@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -263,6 +264,7 @@ class LiveFaceEncoder:
         det_size: int = 1280,
         person_rois: bool = False,
         max_person_rois: int = 4,
+        tap=None,
     ) -> None:
         import onnxruntime as ort
 
@@ -281,6 +283,8 @@ class LiveFaceEncoder:
         self.det_size = det_size
         self.person_rois = person_rois
         self.max_person_rois = max_person_rois
+        # Optional observer of every face with a readable pose, accepted or not.
+        self.tap = tap
         self.pose_gate = {
             "max_yaw_degrees": self.MAX_YAW_DEGREES,
             "max_pitch_degrees": self.MAX_PITCH_DEGREES,
@@ -377,6 +381,8 @@ class LiveFaceEncoder:
                 except ValueError:
                     continue
         result = []
+        tap = getattr(self, "tap", None)
+        tapped = []
         pose_counts = {"accepted": 0, "rejected_angle": 0, "rejected_missing_pose": 0}
         empty = [0] * (len(self.POSE_BUCKETS) + 1)
         histograms = {"yaw_histogram": list(empty), "pitch_histogram": list(empty)}
@@ -400,6 +406,20 @@ class LiveFaceEncoder:
                 for name, angle in (("yaw_histogram", yaw), ("pitch_histogram", pitch)):
                     bucket = int(np.searchsorted(self.POSE_BUCKETS, abs(float(angle))))
                     histograms[name][bucket] += 1
+                seen = None
+                if tap is not None and getattr(face, "kps", None) is not None:
+                    seen = {
+                        "image": image,
+                        "kps": face.kps,
+                        "bbox": _mapped_box(face.bbox, origin),
+                        "yaw": float(yaw),
+                        "pitch": float(pitch),
+                        "det": float(face.det_score),
+                        "width": width,
+                        "embedding": embedding,
+                        "accepted": False,
+                    }
+                    tapped.append(seen)
                 if abs(yaw) > self.MAX_YAW_DEGREES or abs(pitch) > self.MAX_PITCH_DEGREES:
                     pose_counts["rejected_angle"] += 1
                     continue
@@ -417,6 +437,8 @@ class LiveFaceEncoder:
                 if not np.isfinite(embedding).all() or norm <= 0:
                     continue
                 pose_counts["accepted"] += 1
+                if seen is not None:
+                    seen["accepted"] = True
                 result.append(
                     DetectedFace(
                         _mapped_box(face.bbox, origin),
@@ -436,6 +458,9 @@ class LiveFaceEncoder:
                 for key, value in histograms.items()
             },
         }
+        if tapped:
+            with contextlib.suppress(Exception):  # The observer must never cost a face scan.
+                tap(tapped)
         return _deduplicate_faces(result)
 
 

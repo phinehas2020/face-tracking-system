@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Aperture, CaretDown, CaretUp, Crosshair, FilmStrip, Pause, Play, SignIn, SignOut } from "@phosphor-icons/react";
 import { LineForm } from "./LineForm.jsx";
+import { ShadowPanel } from "./ShadowPanel.jsx";
 import "./console.css";
 
 const FlowChart = lazy(() => import("./FlowChart.jsx"));
@@ -27,7 +28,7 @@ function Camera({ title, cam, frame, alt, waiting, drawing, onClick, children })
   </section>;
 }
 
-export function LiveConsole({ status, error, frame, facingFrame, connected, history, calibration, setCalibration, mutate, busy, dirty, drawingGate, setDrawingGate, firstGatePoint, setFirstGatePoint, chooseGatePoint, entryDirection }) {
+export function LiveConsole({ status, error, frame, facingFrame, connected, history, shadow, calibration, setCalibration, mutate, busy, dirty, drawingGate, setDrawingGate, firstGatePoint, setFirstGatePoint, chooseGatePoint, entryDirection }) {
   const [now, setNow] = useState(() => new Date());
   const [lineOpen, setLineOpen] = useState(false);
   useEffect(() => { const timer = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(timer); }, []);
@@ -95,6 +96,7 @@ export function LiveConsole({ status, error, frame, facingFrame, connected, hist
             <div><dt>Camera restarts</dt><dd>{(status?.capture_restarts ?? 0) + (facing?.capture_restarts ?? 0)}</dd></div>
           </dl>
         </section>
+        <ShadowPanel shadow={shadow} />
       </div>
 
       <aside className="console-side">

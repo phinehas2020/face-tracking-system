@@ -23,6 +23,8 @@ class DualLiveSession(LiveSession):
                 "camera_id": "live-facing",
                 "count_passages": False,
                 "activity_capture": self.config.activity_capture,
+                "face_shadow": self.config.face_shadow,
+                "face_shadow_max_mb": self.config.face_shadow_max_mb,
             }
         )
         self.facing = LiveSession(store, config_path, model_path, facing)
