@@ -259,7 +259,10 @@ def score_arrays(yaw, track, t, video, frame, width, embeddings: dict, *, min_ga
         return out
 
     report = {"faces": int(keep.sum()), "tracks": int(len(np.unique(track[keep]))),
-              "genuine_pairs": len(gen), "impostor_pairs": len(imp), "models": {}}
+              "genuine_pairs": len(gen), "impostor_pairs": len(imp),
+              # Many crops of the same two people are one piece of evidence, not many.
+              "impostor_track_pairs": len({tuple(sorted((str(track[a]), str(track[b])))) for a, b in imp}),
+              "models": {}}
     for name, e in embeddings.items():
         g = (e[gen[:, 0]] * e[gen[:, 1]]).sum(1) if len(gen) else np.zeros(0)
         i = (e[imp[:, 0]] * e[imp[:, 1]]).sum(1) if len(imp) else np.zeros(0)

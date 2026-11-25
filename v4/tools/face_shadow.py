@@ -32,7 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from benchmark_face_recognizers import YAW_EDGES, YAW_NAMES, Embedder, score_arrays  # noqa: E402
 
 LIVE = "buffalo_l"
-MIN_IMPOSTORS = 300   # different-person pairs needed before a match rate means anything
+# Evidence needed before a number is shown, in distinct pairs of people seen in one picture
+# (two people standing together give many crop pairs but are one piece of evidence).
+MIN_PEOPLE_PAIRS = 100       # match rates
+MIN_PEOPLE_PAIRS_COUNT = 300  # the people estimate, whose threshold sits in the tail
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS faces (
@@ -113,7 +116,8 @@ def report(db: sqlite3.Connection, models: list[str], window: int, timings: dict
         "SELECT id,camera,track,call,t,yaw,width,accepted FROM faces ORDER BY id DESC LIMIT ?", (window,)).fetchall()[::-1]
     total = db.execute("SELECT COUNT(*), COUNT(DISTINCT track) FROM faces").fetchone()
     out = {"updated_at": datetime.now(UTC).isoformat(), "live_model": LIVE, "shadow_models": models,
-           "faces": total[0], "tracks": total[1], "scored_faces": len(faces), "min_impostors": MIN_IMPOSTORS,
+           "faces": total[0], "tracks": total[1], "scored_faces": len(faces), "min_people_pairs": MIN_PEOPLE_PAIRS,
+           "people_pairs": 0, "rated": False,
            "status": status, "models": {}}
     if not faces:
         return out
@@ -134,8 +138,10 @@ def report(db: sqlite3.Connection, models: list[str], window: int, timings: dict
         if all(int(face_id) in found for face_id in ids):
             embeddings[model] = np.stack([np.frombuffer(found[int(face_id)], dtype=np.float32) for face_id in ids])
     scored = score_arrays(yaw, track, [row[4] for row in faces], video, [row[3] for row in faces],
-                          [row[6] for row in faces], embeddings, min_impostors=MIN_IMPOSTORS)
-    out.update(genuine_pairs=scored["genuine_pairs"], impostor_pairs=scored["impostor_pairs"])
+                          [row[6] for row in faces], embeddings)
+    out.update(genuine_pairs=scored["genuine_pairs"], impostor_pairs=scored["impostor_pairs"],
+               people_pairs=scored["impostor_track_pairs"],
+               rated=scored["impostor_track_pairs"] >= MIN_PEOPLE_PAIRS)
     everyone = np.ones(len(faces), dtype=bool)
     for model, entry in scored["models"].items():
         vectors = embeddings[model]
@@ -143,8 +149,9 @@ def report(db: sqlite3.Connection, models: list[str], window: int, timings: dict
         timing = timings.get(model)
         if timing and timing.get("faces"):
             row["ms_per_face"] = round(1000 * timing["seconds"] / timing["faces"], 1)
-        if scored["impostor_pairs"] >= MIN_IMPOSTORS:
-            # Merge threshold from this station's own faces: 1 in 1000 different-person pairs scores higher.
+        if scored["impostor_track_pairs"] >= MIN_PEOPLE_PAIRS_COUNT:
+            # An estimate. Merge threshold from this station's own faces: 1 in 1000
+            # different-person pairs scores higher.
             pairs = entry["impostor"]
             index = np.flatnonzero(np.diff(video.astype(np.int64) * 10_000_000 + np.array([r[3] for r in faces])) == 0)
             threshold = float(np.quantile((vectors[index] * vectors[index + 1]).sum(1), 0.999)) if len(index) else pairs["max"]

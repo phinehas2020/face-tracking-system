@@ -306,8 +306,8 @@ python tools/face_shadow.py --spool DATA/events/EVENT/face-shadow \
 
 The report scores each recognizer as `tools/benchmark_face_recognizers.py` does: two
 crops of one followed face should match, two faces in one picture should not. Match
-rates and people counts are withheld until 300 different-person pairs have been seen;
-before that only similarities are shown. The same folder can be scored offline with
+rates are withheld until 100 distinct pairs of people have been seen together, and the
+people estimate until 300; before that only similarities are shown. The same folder can be scored offline with
 any other recognizer, because the crops are kept.
 
 ## YOLO26m with a live RF-DETR second look
