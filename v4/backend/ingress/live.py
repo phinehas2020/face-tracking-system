@@ -632,10 +632,17 @@ class LiveSession:
                         )
             self.face_samples_processed += 1
             face_boxes.append(detected.bbox)
-            if (
-                face.identity_id
-                and face.state in {"new", "matched"}
-                and registry.identity_similarity(detected.embedding, face.identity_id) >= 0.6
+            # A visitor with no photo yet takes the first accepted sighting, so no card
+            # stays blank; later photos must still resemble the stored profile closely.
+            if face.identity_id and (
+                (
+                    face.identity_id not in self.face_previews
+                    and face.state in {"new", "matched", "tracked"}
+                )
+                or (
+                    face.state in {"new", "matched"}
+                    and registry.identity_similarity(detected.embedding, face.identity_id) >= 0.6
+                )
             ):
                 left, top, right, bottom = map(int, detected.bbox)
                 crop = face_frame[
