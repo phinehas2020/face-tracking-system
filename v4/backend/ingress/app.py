@@ -33,8 +33,10 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         store.initialize()
         _app.state.live = None
         if app_settings.live_camera_file:
-            if app_settings.host not in {"127.0.0.1", "localhost", "::1"}:
-                raise RuntimeError("The live camera test must bind to loopback")
+            if not app_settings.live_allow_lan and app_settings.host not in {"127.0.0.1", "localhost", "::1"}:
+                raise RuntimeError(
+                    "The live camera test must bind to loopback unless INGRESS_LIVE_ALLOW_LAN=1"
+                )
             payload = json.loads(app_settings.live_camera_file.read_text())
             session_type = (
                 DualLiveSession

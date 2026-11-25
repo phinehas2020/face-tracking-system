@@ -23,6 +23,8 @@ class Settings:
     web_dist: Path
     live_camera_file: Path | None = None
     live_model_path: str = "yolo26s.pt"
+    # The live pages have no login, so serving them beyond this machine is opt-in.
+    live_allow_lan: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -49,6 +51,7 @@ class Settings:
             live_model_path=os.getenv(
                 "INGRESS_LIVE_MODEL", str(project_root / "models" / "yolo26s.pt")
             ),
+            live_allow_lan=_bool_env("INGRESS_LIVE_ALLOW_LAN", False),
         )
 
 

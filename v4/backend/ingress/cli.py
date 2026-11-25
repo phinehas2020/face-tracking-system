@@ -28,6 +28,7 @@ def _settings(data_root: str | None = None) -> Settings:
         web_dist=base.web_dist,
         live_camera_file=base.live_camera_file,
         live_model_path=base.live_model_path,
+        live_allow_lan=base.live_allow_lan,
     )
 
 
@@ -88,8 +89,12 @@ def main() -> None:
 
     if args.command == "serve":
         host = args.host or settings.host
-        if settings.live_camera_file and host not in {"127.0.0.1", "localhost", "::1"}:
-            parser.error("The live camera test must bind to loopback")
+        if (
+            settings.live_camera_file
+            and not settings.live_allow_lan
+            and host not in {"127.0.0.1", "localhost", "::1"}
+        ):
+            parser.error("The live camera test must bind to loopback unless INGRESS_LIVE_ALLOW_LAN=1")
         uvicorn.run(
             create_app(settings),
             host=host,
