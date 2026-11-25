@@ -37,8 +37,7 @@ export function LiveConsole({ status, error, frame, facingFrame, connected, hist
   const visitors = recognition?.visitors ?? [];
   const recent = status?.recent ?? [];
   const buckets = history?.buckets ?? null;
-  const hourAgo = now.getTime() - 3600000;
-  const lastHour = buckets ? buckets.filter((bucket) => new Date(bucket.start).getTime() + history.bucket_seconds * 1000 > hourAgo).reduce((sum, bucket) => ({ in: sum.in + bucket.in, out: sum.out + bucket.out }), { in: 0, out: 0 }) : null;
+  const lastHour = buckets ? buckets.slice(-Math.round(3600 / history.bucket_seconds)).reduce((sum, bucket) => ({ in: sum.in + bucket.in, out: sum.out + bucket.out }), { in: 0, out: 0 }) : null;
   const pose = facing?.runtime?.face_pose_gate;
   const posed = pose ? pose.accepted + pose.rejected_angle : 0;
   const link = status?.cross_camera_association;
@@ -82,7 +81,7 @@ export function LiveConsole({ status, error, frame, facingFrame, connected, hist
           <Camera title="Facing · faces" cam={facing} frame={facingFrame} alt="Facing camera recognizing visitors" waiting="Reconnecting the facing camera" />
         </div>
         {buckets ? <section className="console-panel console-flow">
-          <h2>Passages over time <span>Last 6 hours · 10-minute bars</span><i className="key in" />Entries<i className="key out" />Exits</h2>
+          <h2><strong>Passages over time</strong><span>Last 6 hours · 10-minute bars</span><i className="key in" />Entries<i className="key out" />Exits</h2>
           <div className="console-chart"><Suspense fallback={null}><FlowChart buckets={buckets} /></Suspense></div>
         </section> : null}
         <section className="console-panel console-health">

@@ -46,7 +46,7 @@
 .console-flow h2 .key.in { background: var(--teal); margin-left: auto; }
 .console-flow h2 .key.out { background: var(--orange); }
 .console-flow h2 { font-weight: 400; font-size: 11px; color: var(--muted); }
-.console-flow h2::first-line { color: var(--ink); }
+.console-flow h2 strong { font-size: 13px; font-weight: 550; color: var(--ink); }
 .console-chart { height: 170px; margin-top: 10px; }
 .console-health dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; margin: 12px 0 0; }
 .console-health dt { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }

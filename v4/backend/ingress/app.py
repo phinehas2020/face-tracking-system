@@ -238,7 +238,8 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
             candidate = (web_dist / path).resolve()
             if path and candidate.is_file() and web_dist in candidate.parents:
                 return FileResponse(candidate)
-            return FileResponse(web_dist / "index.html")
+            # Revalidate the page itself so a new build shows up without a hard reload.
+            return FileResponse(web_dist / "index.html", headers={"Cache-Control": "no-cache"})
 
     return app
 
