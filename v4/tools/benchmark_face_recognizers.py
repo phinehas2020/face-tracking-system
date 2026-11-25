@@ -133,16 +133,28 @@ def _onnx_embed(path: Path, aligned_bgr: np.ndarray) -> np.ndarray:
     return np.concatenate(out)
 
 
-def _load_cvl(path: Path):
-    from transformers import AutoModel
+def _load_cvl(path: Path, aligner: bool = False):
+    """Build a CVLFace model from its repository directly (its transformers wrapper
+    breaks on current transformers releases)."""
+    import yaml
+    from omegaconf import OmegaConf
+    for mod in [m for m in sys.modules if m.split(".")[0] in ("models", "aligners")]:
+        del sys.modules[mod]
     cwd = os.getcwd()
     os.chdir(path)
     sys.path.insert(0, str(path))
     try:
-        return AutoModel.from_pretrained(str(path), trust_remote_code=True).eval()
+        conf = OmegaConf.create(yaml.safe_load(open("pretrained_model/model.yaml")))
+        if aligner:
+            from aligners import get_aligner
+            model = get_aligner(conf)
+        else:
+            from models import get_model
+            model = get_model(conf)
+        model.load_state_dict_from_path(str(Path(path).resolve() / "pretrained_model" / "model.pt"))
+        return model.eval()
     finally:
         os.chdir(cwd)
-        sys.path.pop(0)
 
 
 def embed(args) -> None:
@@ -151,7 +163,7 @@ def embed(args) -> None:
     data = np.load(run / "faces.npz")
     aligned, loose, loose_kps = data["aligned"], data["loose"], data["loose_kps"]
     rows = json.loads((run / "faces.json").read_text())["rows"]
-    root = Path(args.models_root)
+    root = Path(args.models_root).resolve()
     name = args.model
     if name == "buffalo_l":
         emb = _onnx_embed(root / "insightface/models/buffalo_l/w600k_r50.onnx", aligned)
@@ -164,12 +176,10 @@ def embed(args) -> None:
         repo = {"adaface_ir101_wf12m": "cvlface_adaface_ir101_webface12m",
                 "kprpe_wf12m": "cvlface_adaface_vit_base_kprpe_webface12m",
                 "kprpe_wf4m": "cvlface_adaface_vit_base_kprpe_webface4m"}[base]
-        to_tensor = lambda a: ((torch.from_numpy(np.ascontiguousarray(a[..., ::-1])).float() / 255 - 0.5) / 0.5).permute(0, 3, 1, 2)
+        to_tensor = lambda a: ((torch.from_numpy(np.ascontiguousarray(a[..., ::-1])).float() / 255 - 0.5) / 0.5).permute(0, 3, 1, 2).contiguous()
         kps_al = np.asarray([r["kps_aligned"] for r in rows], dtype=np.float32)
         if variant == "dfa":
-            aligner = _load_cvl(root / "cvlface_DFA_mobilenet").to(device)
-            for mod in [m for m in sys.modules if m == "models" or m.startswith("models.")]:
-                del sys.modules[mod]
+            aligner = _load_cvl(root / "cvlface_DFA_mobilenet", aligner=True).to(device)
         model = _load_cvl(root / repo).to(device)
         out = []
         with torch.no_grad():
