@@ -179,12 +179,14 @@ class CameraConfig:
     # Save a short film strip of every active moment at the door for labelling.
     activity_capture: bool = False
     activity_capture_max_mb: int = 600
+    rtsp_path: str | None = None
 
     @property
     def url(self) -> str:
+        path = self.rtsp_path or f"/Streaming/Channels/{self.channel}"
         return (
             f"rtsp://{quote(self.username, safe='')}:{quote(self.password, safe='')}"
-            f"@{self.host}:554/Streaming/Channels/{self.channel}"
+            f"@{self.host}:554/{path.lstrip('/')}"
         )
 
 
