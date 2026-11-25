@@ -113,6 +113,39 @@ def test_live_api_freshness_calibration_and_pause(live):
         assert not live.counter.states
 
 
+def test_history_buckets_recent_passages_and_ignores_older_ones(live, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    stamps = iter(
+        [
+            (now - timedelta(hours=30)).isoformat(),
+            (now - timedelta(minutes=25)).isoformat(),
+            (now - timedelta(seconds=2)).isoformat(),
+            (now - timedelta(seconds=1)).isoformat(),
+        ]
+    )
+    monkeypatch.setattr("ingress.live.utc_now", lambda: next(stamps))
+    live._record("track-old", "in")
+    live._record("track-1", "in")
+    live._record("track-2", "in")
+    live._record("track-2", "out")
+    app = FastAPI()
+    app.state.live = live
+    app.include_router(live_router())
+    with TestClient(app) as client:
+        body = client.get("/api/live/history?hours=2&bucket_minutes=10").json()
+        assert body["bucket_seconds"] == 600
+        assert len(body["buckets"]) == 12
+        starts = [bucket["start"] for bucket in body["buckets"]]
+        assert starts == sorted(starts)
+        assert sum(bucket["in"] for bucket in body["buckets"]) == 2
+        assert sum(bucket["out"] for bucket in body["buckets"]) == 1
+        assert sum(bucket["linked"] for bucket in body["buckets"]) == 0
+        assert client.get("/api/live/history?hours=0").status_code == 422
+        assert client.get("/api/live/history?bucket_minutes=0").status_code == 422
+
+
 def test_camera_url_encodes_credentials():
     config = CameraConfig("192.0.2.1", "user@name", "a!b:c#d")
     assert config.url == "rtsp://user%40name:a%21b%3Ac%23d@192.0.2.1:554/Streaming/Channels/101"

@@ -18,6 +18,8 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - The core behavior works with the API and degrades to deterministic fixtures for visual review. Case decisions, replay controls, camera selection, overlays, model selection, navigation, and guarded lifecycle controls stay interactive.
 - Use Phosphor for icons, Recharts for data visualization, and generated camera imagery from `public/assets/cameras`. Do not introduce emoji, inline SVG, decorative gradients, or generic placeholders.
 
+- The live two-camera station page (`/live`, `LiveConsole.jsx`) is a single-screen console in the Event Time Machine look: counts strip, both cameras side by side in wells shaped like the camera picture, passages-over-time chart and station health below, and a right column with the counting line (collapsed until adjusted), recognized visitors and recent passages in scroll regions. It shows real station data only; nothing from the fixture console is carried over. The user rejected the earlier long single-column page (2026-11-25).
+
 - A station uses front and side cameras together on a shared timeline. Show both views together; count passages in one designated view and expose cross-view identity evidence plus a same-frame single-view control. Sequential single-camera excerpts do not validate the paired architecture.
 
 - Live front/side station: facing camera recognizes faces without a counting line; side camera alone confirms passages. Show both live views and their freshness together. Do not infer cross-camera identity from timestamps alone.

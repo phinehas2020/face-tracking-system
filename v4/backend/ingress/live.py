@@ -1261,6 +1261,41 @@ def live_router() -> APIRouter:
         value = getattr(request.app.state, "live", None)
         return value.snapshot() if value else {"enabled": False}
 
+    @router.get("/history")
+    def history(request: Request, hours: float = 6, bucket_minutes: int = 10):
+        """Counted passages per time bucket, oldest first, for the station page's chart."""
+        if not 0 < hours <= 48 or not 1 <= bucket_minutes <= 120:
+            raise HTTPException(422, "Unsupported history range")
+        value = session(request)
+        step = bucket_minutes * 60
+        last = int(datetime.now(UTC).timestamp() // step) * step
+        first = last - (math.ceil(hours * 3600 / step) - 1) * step
+        buckets = {
+            start: {"in": 0, "out": 0, "linked": 0} for start in range(first, last + step, step)
+        }
+        with value.store.connect() as db:
+            rows = db.execute(
+                "SELECT observed_at,direction,identity_id FROM passages WHERE event_id=?",
+                (value.event_id,),
+            ).fetchall()
+        for observed_at, direction, identity_id in rows:
+            try:
+                moment = datetime.fromisoformat(observed_at).timestamp()
+            except ValueError:
+                continue
+            slot = buckets.get(int(moment // step) * step)
+            if slot is None or direction not in ("in", "out"):
+                continue
+            slot[direction] += 1
+            slot["linked"] += int(identity_id is not None)
+        return {
+            "bucket_seconds": step,
+            "buckets": [
+                {"start": datetime.fromtimestamp(start, UTC).isoformat(), **counts}
+                for start, counts in buckets.items()
+            ],
+        }
+
     @router.get("/frame.jpg")
     def frame(request: Request, camera: str = "side"):
         value = session(request)
