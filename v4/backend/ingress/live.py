@@ -28,6 +28,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from .domain import utc_now
 from .face_registry import FaceRegistry, recount
+from .recognizer import FACE_MODEL
+from .recognizer import load as load_recognizer
 from .store import EventStore
 
 CAPTURE_STALL_SECONDS = 10
@@ -305,6 +307,9 @@ class LiveSession:
             self.calibration = LiveCalibration.model_validate_json(saved[0])
             self.counter = self._new_counter()
         self.face_registry = FaceRegistry(self.store, self.event_id, self.camera_id)
+        if start_workers:
+            # Loaded here, before any camera thread exists; a failure stops the start.
+            load_recognizer()
         self.face_previews, self.face_preview_quality = self.store.load_face_previews(self.event_id)
         if self.config.activity_capture and not getattr(self, "is_replay", False):
             from .activity import ActivityRecorder, FrameRing
@@ -889,6 +894,7 @@ class LiveSession:
                     self.face_status = self.face_worker.status
                     self.runtime.update(
                         face_provider=self.face_worker.provider,
+                        face_model=FACE_MODEL,
                         face_error=self.face_worker.error,
                         face_fallback=self.face_worker.fallback_reason,
                         face_pose_gate=self.face_worker.pose_gate,

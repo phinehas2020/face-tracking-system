@@ -29,7 +29,7 @@ export function ShadowPanel({ shadow }) {
           <td>{cell(row.summary?.turned)}</td>
           <td>{row.impostor?.n ? `${row.impostor.p99.toFixed(2)} at worst 1%` : "—"}</td>
           <td>{row.people ? `${row.people.all_angles.people} · ${row.people.frontal_only.people} facing only` : "—"}</td>
-          <td>{row.ms_per_face != null ? `${Math.round(row.ms_per_face)} ms` : name === report.live_model ? "in the live path" : "—"}</td>
+          <td>{row.ms_per_face != null ? `${Math.round(row.ms_per_face)} ms` : name === "buffalo_l" ? "with detection" : "—"}</td>
         </tr>)}</tbody>
       </table> : <p className="console-empty">No face has been seen since the comparison started.</p>}
       {models.length && !rated ? <p className="console-shadow-note">Match rates appear after {report.min_people_pairs} different pairs of people have been seen together in one picture; {report.people_pairs} so far. Until then the similarity of two crops of one followed face is shown: higher is better.</p> : null}

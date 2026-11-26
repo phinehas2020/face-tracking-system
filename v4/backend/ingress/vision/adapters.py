@@ -285,6 +285,11 @@ class LiveFaceEncoder:
         self.max_person_rois = max_person_rois
         # Optional observer of every face with a readable pose, accepted or not.
         self.tap = tap
+        from ..recognizer import load
+
+        # None keeps the detector's own buffalo_l template.
+        self.recognizer = load()
+        self.recognizer_errors = 0
         self.pose_gate = {
             "max_yaw_degrees": self.MAX_YAW_DEGREES,
             "max_pitch_degrees": self.MAX_PITCH_DEGREES,
@@ -431,6 +436,17 @@ class LiveFaceEncoder:
                     eye_span = float(points[1][0] - points[0][0])
                     nose_fraction = float(points[2][0] - points[0][0]) / max(eye_span, 1)
                     if face.det_score < 0.85 or eye_span < 12 or not 0.2 <= nose_fraction <= 0.8:
+                        continue
+                recognizer = getattr(self, "recognizer", None)
+                if recognizer is not None:
+                    # The selected recognizer replaces the template; a failure drops
+                    # the face rather than store buffalo_l under another name.
+                    try:
+                        from ..recognizer import aligned_face
+
+                        embedding = recognizer.embed(*aligned_face(image, face.kps))
+                    except Exception:
+                        self.recognizer_errors = getattr(self, "recognizer_errors", 0) + 1
                         continue
                 embedding = np.asarray(embedding, dtype=np.float32)
                 norm = float(np.linalg.norm(embedding))

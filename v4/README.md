@@ -284,6 +284,14 @@ agent with automatic process restart. Existing event counts and templates are
 preserved. Test an actual enter/leave/re-enter sequence after camera placement
 or side-line calibration changes.
 
+## Choosing the live recognizer
+
+`INGRESS_FACE_RECOGNIZER=kprpe_wf12m` with `INGRESS_FACE_MODELS_ROOT` (the folder holding the
+CVLFace repository) makes AdaFace ViT KP-RPE produce the template for every accepted face;
+the default is `buffalo_l`. Detection, the pose gate and the thresholds are unchanged, and the
+thresholds are not yet tuned for KP-RPE. Templates are stored per recognizer, so switching
+starts a fresh visitor list (numbers continue) and switching back restores the old one.
+
 ## Shadow recognizers beside the live one
 
 Set `"face_shadow": true` in the camera file (`"face_shadow_max_mb"`, default 500,

@@ -12,9 +12,9 @@ import numpy as np
 
 from .domain import utc_now
 from .evidence import save_tracklet
+from .recognizer import FACE_MODEL
 from .store import EventStore
 
-FACE_MODEL = "buffalo_l/w600k_r50"
 MATCH_THRESHOLD = 0.60
 NEW_THRESHOLD = 0.35
 MIN_MARGIN = 0.08
@@ -86,7 +86,16 @@ class FaceRegistry:
         self.templates: dict[str, np.ndarray] = {}
         self.labels: dict[str, str] = {}
         self.confirmed_variants: dict[str, list[np.ndarray]] = {}
+        # Visitor numbers continue past those another recognizer gave in this event.
+        self.label_floor = 0
         with store.connect() as db:
+            for row in db.execute(
+                "SELECT label FROM face_templates WHERE event_id=? AND model!=?",
+                (event_id, FACE_MODEL),
+            ):
+                tail = row["label"].split()[-1] if row["label"] else ""
+                if row["label"].startswith("Visitor ") and tail.isdigit():
+                    self.label_floor = max(self.label_floor, int(tail))
             for row in db.execute(
                 "SELECT * FROM face_templates WHERE event_id=? AND model=?", (event_id, FACE_MODEL)
             ):
@@ -239,7 +248,7 @@ class FaceRegistry:
                         for label in self.labels.values()
                         if label.startswith("Visitor ") and label.split()[-1].isdigit()
                     ),
-                    default=0,
+                    default=self.label_floor,
                 )
                 + 1
             )
@@ -386,8 +395,8 @@ class FaceRegistry:
                 MAX(p.observed_at) AS last_passage
                 FROM face_templates f LEFT JOIN passages p
                 ON p.identity_id=f.identity_id AND p.event_id=f.event_id
-                WHERE f.event_id=? GROUP BY f.identity_id ORDER BY f.label""",
-                    (self.event_id,),
+                WHERE f.event_id=? AND f.model=? GROUP BY f.identity_id ORDER BY f.label""",
+                    (self.event_id, FACE_MODEL),
                 )
             ]
             unresolved = db.execute(

@@ -97,6 +97,71 @@ def test_encoder_taps_turned_faces_the_pose_gate_rejects():
     assert len(encoder.detect(np.zeros((240, 400, 3), dtype=np.uint8))) == 1
 
 
+def test_selected_recognizer_replaces_the_template_but_not_the_spooled_one():
+    buffalo = np.zeros(512, dtype=np.float32)
+    buffalo[0] = 1
+    other = np.zeros(512, dtype=np.float32)
+    other[1] = 1
+    seen, crops = [], []
+
+    def embed(crop, points):
+        crops.append((crop.shape, points.shape))
+        return other
+
+    encoder = LiveFaceEncoder.__new__(LiveFaceEncoder)
+    encoder.tap = seen.append
+    encoder.recognizer = SimpleNamespace(embed=embed)
+    encoder.app = SimpleNamespace(
+        get=lambda image: [
+            SimpleNamespace(
+                bbox=np.asarray((10, 10, 130, 130)),
+                det_score=0.95,
+                normed_embedding=buffalo,
+                kps=KPS,
+                pose=(0, 0, 0),
+            )
+        ]
+    )
+    frame = np.zeros((240, 400, 3), dtype=np.uint8)
+    (found,) = encoder.detect(frame)
+    assert found.embedding[1] == 1 and crops == [((112, 112, 3), (5, 2))]
+    assert seen[0][0]["embedding"][0] == 1  # the comparison keeps buffalo_l's template
+
+    def failing(_crop, _points):
+        raise RuntimeError("model failed")
+
+    # A failing recognizer drops the face; buffalo_l is never stored in its place.
+    encoder.recognizer = SimpleNamespace(embed=failing)
+    assert encoder.detect(frame) == [] and encoder.recognizer_errors == 1
+
+
+def test_visitor_numbers_continue_past_another_recognizers(tmp_path):
+    from ingress.face_registry import FACE_MODEL, FaceRegistry
+
+    store = EventStore(tmp_path / "data")
+    store.initialize()
+    event, stamp = "fair", "2026-11-25T00:00:00+00:00"
+    with store.transaction() as db:
+        db.execute(
+            "INSERT INTO events (id,title,event_date,status,source_label,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (event, "Fair", "2026-11-25", "live", "test", stamp),
+        )
+        db.execute(
+            "INSERT INTO identities (id,event_id,created_at,updated_at,status,confidence,"
+            "prototype_count) VALUES ('old',?,?,?,'face_observed',1,3)",
+            (event, stamp, stamp),
+        )
+        db.execute(
+            "INSERT INTO face_templates (identity_id,event_id,model,embedding,label,quality,"
+            "samples,updated_at) VALUES ('old',?,'another/model',?,'Visitor 017',1,3,?)",
+            (event, np.ones(512, dtype=np.float32).tobytes(), stamp),
+        )
+    registry = FaceRegistry(store, event)
+    assert FACE_MODEL != "another/model" and registry.templates == {}
+    assert registry.label_floor == 17 and registry.summary()["visitors"] == []
+
+
 def test_shadow_endpoint_serves_the_report_only_when_present(tmp_path):
     config = tmp_path / "camera.json"
     config.write_text(json.dumps({"host": "camera.invalid", "face_shadow": True}))

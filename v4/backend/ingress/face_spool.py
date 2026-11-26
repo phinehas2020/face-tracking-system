@@ -75,7 +75,7 @@ class FaceSpool:
             self.metrics["errors"] += 1
 
     def _offer(self, candidates: list[dict], now: float) -> None:
-        from insightface.utils import face_align
+        from .recognizer import aligned_face
 
         self.calls += 1
         kept: list[dict] = []
@@ -108,11 +108,10 @@ class FaceSpool:
             if self.metrics["bytes"] >= self.max_bytes or len(self.pending) == self.pending.maxlen:
                 self.metrics["skipped_full"] += 1
                 continue
-            points = np.asarray(item["kps"], dtype=np.float32)
-            matrix = face_align.estimate_norm(points, 112)
+            crop, points = aligned_face(item["image"], item["kps"])
             record = {
-                "aligned": face_align.norm_crop(item["image"], points, 112),
-                "kps": ((points @ matrix[:, :2].T + matrix[:, 2]) / 112.0).astype(np.float32),
+                "aligned": crop,
+                "kps": points,
                 "embedding": np.asarray(item["embedding"], dtype=np.float32),
                 "meta": {
                     "camera": self.camera,

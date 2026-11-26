@@ -31,7 +31,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from benchmark_face_recognizers import YAW_EDGES, YAW_NAMES, Embedder, score_arrays  # noqa: E402
 
-LIVE = "buffalo_l"
+LIVE = "buffalo_l"  # the template the station spools with each crop, whichever recognizer is live
 # Evidence needed before a number is shown, in distinct pairs of people seen in one picture
 # (two people standing together give many crop pairs but are one piece of evidence).
 MIN_PEOPLE_PAIRS = 100       # match rates
@@ -111,11 +111,12 @@ def people(track, vectors, mask, threshold: float) -> dict:
     return {"people": len(centres), "tracks": used}
 
 
-def report(db: sqlite3.Connection, models: list[str], window: int, timings: dict, status: dict) -> dict:
+def report(db: sqlite3.Connection, models: list[str], window: int, timings: dict, status: dict,
+           live: str = LIVE) -> dict:
     faces = db.execute(
         "SELECT id,camera,track,call,t,yaw,width,accepted FROM faces ORDER BY id DESC LIMIT ?", (window,)).fetchall()[::-1]
     total = db.execute("SELECT COUNT(*), COUNT(DISTINCT track) FROM faces").fetchone()
-    out = {"updated_at": datetime.now(UTC).isoformat(), "live_model": LIVE, "shadow_models": models,
+    out = {"updated_at": datetime.now(UTC).isoformat(), "live_model": live, "shadow_models": [m for m in [LIVE, *models] if m != live],
            "faces": total[0], "tracks": total[1], "scored_faces": len(faces), "min_people_pairs": MIN_PEOPLE_PAIRS,
            "people_pairs": 0, "rated": False,
            "status": status, "models": {}}
@@ -170,6 +171,7 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--interval", type=float, default=10.0)
     parser.add_argument("--window", type=int, default=20000, help="most recent faces scored")
+    parser.add_argument("--live", default=LIVE, help="the recognizer the station itself uses, for the report's label")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 
@@ -203,7 +205,7 @@ def main() -> None:
                 print(f"{datetime.now().strftime('%H:%M:%S')} +{added} faces, {embedded} templates", flush=True)
             status = {"state": "running", "load_errors": errors}
             if changed:
-                latest = report(db, list(embedders), args.window, timings, status)
+                latest = report(db, list(embedders), args.window, timings, status, args.live)
                 changed = False
             else:                                                 # heartbeat only
                 latest.update(updated_at=datetime.now(UTC).isoformat(), status=status)
