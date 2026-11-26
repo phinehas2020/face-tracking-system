@@ -405,3 +405,27 @@ def test_a_face_stored_under_its_body_and_face_track_counts_once(tmp_path):
     save_tracklet(store, EVENT, CAMERA + EVENT, "ns:face-track-3", FACE_MODEL,
                   [near(rng, person, 0.97)], [0.9], at(60), at(60), None, "collecting")
     assert resolution.resolve(store, EVENT).report["clusters"]["established"] == 1
+
+
+def test_a_long_event_drops_its_weakest_tracklets_instead_of_refusing(tmp_path):
+    rng = np.random.default_rng(11)
+    store = make_store(tmp_path)
+    person = unit(rng)
+    add_tracklet(store, rng, "face-track-1", person, 0)
+    add_tracklet(store, rng, "face-track-2", person, 600)
+    for index in range(6):  # glimpses of strangers, one face each
+        add_tracklet(store, rng, f"face-track-{10 + index}", unit(rng), 100 + 10 * index, samples=1)
+    add_passage(store, "p1", "face-track-10")
+
+    full = resolution.resolve(store, EVENT).report
+    assert full["inputs"]["thinned_for_scale"] == 0
+
+    report = resolution.resolve(store, EVENT, config=resolution.ResolverConfig(max_units=4)).report
+    assert report["inputs"]["evidence_nodes"] == 4
+    assert report["inputs"]["thinned_for_scale"] == 4
+    # The returning person is still found, and the glimpse a crossing was counted on is kept.
+    assert report["clusters"]["established"] == full["clusters"]["established"] == 1
+    assert len(report["auto_links"]) == 1
+
+    with pytest.raises(ValueError, match="max_units"):
+        resolution.resolve(store, EVENT, config=resolution.ResolverConfig(max_units=1))

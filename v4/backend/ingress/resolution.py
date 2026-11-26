@@ -324,11 +324,29 @@ def resolve(
                 frozenset(row.tobytes() for row in tracklet.embeddings),
             )
         )
+    thinned = 0
     if len(units) > config.max_units:
-        raise ValueError(
-            f"{len(units)} evidence nodes exceed max_units={config.max_units}; "
-            "this dense resolver needs nearest-neighbour sparsification at that scale"
-        )
+        # The matrices below are dense. A long event is mostly unenrolled tracklets of
+        # one or two faces, the weakest evidence there is, so those go first: fewest
+        # samples, then lowest quality, keeping any that a crossing was counted on.
+        crossed = {tracklet_ref.get((row["camera_id"], row["track_id"])) for row in passages}
+        spare = sorted(
+            (unit for unit in units if unit.group == unit.ref and unit.ref not in crossed),
+            key=lambda unit: (unit.samples, unit.quality, unit.ref),
+        )[: len(units) - config.max_units]
+        if len(units) - len(spare) > config.max_units or any(
+            unit.samples >= MIN_SAMPLES for unit in spare
+        ):
+            raise ValueError(
+                f"{len(units)} evidence nodes exceed max_units={config.max_units} even "
+                "without the tracklets of fewer than three faces; this dense resolver "
+                "needs nearest-neighbour sparsification at that scale"
+            )
+        dropped = {unit.ref for unit in spare}
+        units = [unit for unit in units if unit.ref not in dropped]
+        for ref in dropped:
+            del group_of_ref[ref]
+        thinned = len(dropped)
 
     group_keys = sorted(set(group_of_ref.values()))
     group_index = {key: index for index, key in enumerate(group_keys)}
@@ -353,6 +371,8 @@ def resolve(
             "tracklets": len(tracklets),
             "evidence_nodes": len(units),
             "skipped_tracklets": skipped,
+            # Weak tracklets left out so the event fits; 0 means all evidence was used.
+            "thinned_for_scale": thinned,
         },
     }
     if not units:
