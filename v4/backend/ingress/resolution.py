@@ -329,9 +329,18 @@ def resolve(
         # The matrices below are dense. A long event is mostly unenrolled tracklets of
         # one or two faces, the weakest evidence there is, so those go first: fewest
         # samples, then lowest quality, keeping any that a crossing was counted on.
-        crossed = {tracklet_ref.get((row["camera_id"], row["track_id"])) for row in passages}
+        # Never an enrolled identity, a tracklet a crossing was counted on, or one a
+        # person has already ruled on.
+        held = {tracklet_ref.get((row["camera_id"], row["track_id"])) for row in passages}
+        held.update(ref for row in human for ref in (row["left_ref"], row["right_ref"]))
         spare = sorted(
-            (unit for unit in units if unit.group == unit.ref and unit.ref not in crossed),
+            (
+                unit
+                for unit in units
+                if unit.ref.startswith("tracklet:")
+                and unit.group == unit.ref
+                and unit.ref not in held
+            ),
             key=lambda unit: (unit.samples, unit.quality, unit.ref),
         )[: len(units) - config.max_units]
         if len(units) - len(spare) > config.max_units or any(

@@ -416,16 +416,29 @@ def test_a_long_event_drops_its_weakest_tracklets_instead_of_refusing(tmp_path):
     for index in range(6):  # glimpses of strangers, one face each
         add_tracklet(store, rng, f"face-track-{10 + index}", unit(rng), 100 + 10 * index, samples=1)
     add_passage(store, "p1", "face-track-10")
+    # An enrolled visitor with one confirmed variant: two one-sample nodes that must stay.
+    visitor = unit(rng)
+    add_identity(store, "face-v", "Visitor 001", visitor)
+    with store.transaction() as db:
+        db.execute(
+            "INSERT INTO confirmed_face_variants (source_identity_id,identity_id,event_id,"
+            "model,embedding,confirmed_by,created_at) VALUES (?,?,?,?,?,?,?)",
+            ("face-old", "face-v", EVENT, FACE_MODEL, near(rng, visitor, 0.9).tobytes(),
+             "test", at(0)),
+        )
+    add_passage(store, "p2", "face-track-99", identity="face-v")
 
     full = resolution.resolve(store, EVENT).report
     assert full["inputs"]["thinned_for_scale"] == 0
 
-    report = resolution.resolve(store, EVENT, config=resolution.ResolverConfig(max_units=4)).report
-    assert report["inputs"]["evidence_nodes"] == 4
+    report = resolution.resolve(store, EVENT, config=resolution.ResolverConfig(max_units=6)).report
+    assert report["inputs"]["evidence_nodes"] == 6
     assert report["inputs"]["thinned_for_scale"] == 4
-    # The returning person is still found, and the glimpse a crossing was counted on is kept.
-    assert report["clusters"]["established"] == full["clusters"]["established"] == 1
+    # The returning person is still found; the visitor and the glimpse a crossing was
+    # counted on are kept.
+    assert report["clusters"]["established"] == full["clusters"]["established"] == 2
     assert len(report["auto_links"]) == 1
+    assert report["counts"]["resolved"] == full["counts"]["resolved"]
 
     with pytest.raises(ValueError, match="max_units"):
         resolution.resolve(store, EVENT, config=resolution.ResolverConfig(max_units=1))

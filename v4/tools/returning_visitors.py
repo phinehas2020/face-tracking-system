@@ -101,7 +101,7 @@ def crop_index(shadow_db: Path, spool: Path, models_root: Path, model: str, cach
     return meta, ids, vectors
 
 
-def write_sheets(people, tracklets, args, out: Path) -> dict:
+def write_sheets(people, established, tracklets, args, out: Path) -> dict:
     from PIL import Image, ImageDraw
 
     spool = Path(args.spool)
@@ -149,6 +149,21 @@ def write_sheets(people, tracklets, args, out: Path) -> dict:
                 local = datetime.fromisoformat(seen).astimezone().strftime("%H:%M")
                 draw.text((86 + column * 116, y + 114), f"{local} {meta[face_id][2][5:]}", fill="black")
         sheet.save(out / f"seen-again-{name}.jpg", quality=88)
+    # The strips above show one face per occasion, so they cannot show two people merged
+    # into one. For the people with the most faces, show a random dozen of all of them.
+    largest = sorted(established.values(), key=lambda members: -template(members)[1])[:6]
+    sheet = Image.new("RGB", (84 + 12 * 116, len(largest) * 130), "white")
+    draw = ImageDraw.Draw(sheet)
+    for index, members in enumerate(largest):
+        faces = sorted({crop_of[s.tobytes()] for t in members for s in t.embeddings
+                        if s.tobytes() in crop_of})
+        draw.text((2, index * 130 + 30), f"#{index + 1}\n{template(members)[1]} faces\n"
+                  f"{len(faces)} shown from", fill="black")
+        for column, face_id in enumerate(random.Random(index).sample(faces, min(12, len(faces)))):
+            sheet.paste(crop(face_id), (84 + column * 116, index * 130))
+            local = datetime.fromtimestamp(meta[face_id][3]).strftime("%H:%M")
+            draw.text((86 + column * 116, index * 130 + 114), f"{local} {meta[face_id][2][5:]}", fill="black")
+    sheet.save(out / "largest-people.jpg", quality=88)
     return {"samples_with_a_proven_crop": len(crop_of), "samples": len(samples),
             "people_with_crops_on_two_occasions": len(rows)}
 
@@ -190,24 +205,33 @@ def main() -> None:
     resolved = resolution.resolve(store, args.event, config=config, calibration=calibration)
 
     tracklets = load_tracklets(store, args.event, resolution.FACE_MODEL)
-    by_person = defaultdict(list)
-    for tracklet in tracklets:
-        person = resolved.assignments.get(f"tracklet:{tracklet.id}")
-        if person:
-            by_person[person].append(tracklet)
-    established = {key: members for key, members in by_person.items()
-                   if key.startswith("identity:") or template(members)[1] >= MIN_SAMPLES}
-    people, strong = [], 0
-    for key, members in established.items():
-        groups = occasions(members, args.gap_minutes * 60)
-        if len(groups) < 2:
-            continue
-        templates = [template(group) for group in groups]
-        pairs = [float(a[0] @ b[0]) for i, a in enumerate(templates) for b in templates[i + 1:]]
-        solid = [vector for vector, count in templates if count >= MIN_SAMPLES]
-        strong += len(solid) >= 2 and min(
-            float(a @ b) for i, a in enumerate(solid) for b in solid[i + 1:]) >= 0.6
-        people.append({"person": key, "groups": groups, "lowest_similarity": min(pairs)})
+
+    def seen_again(assignments: dict):
+        by_person = defaultdict(list)
+        for tracklet in tracklets:
+            person = assignments.get(f"tracklet:{tracklet.id}")
+            if person:
+                by_person[person].append(tracklet)
+        established = {key: members for key, members in by_person.items()
+                       if key.startswith("identity:") or template(members)[1] >= MIN_SAMPLES}
+        people, strong = [], 0
+        for key, members in established.items():
+            groups = occasions(members, args.gap_minutes * 60)
+            if len(groups) < 2:
+                continue
+            templates = [template(group) for group in groups]
+            pairs = [float(a[0] @ b[0]) for i, a in enumerate(templates) for b in templates[i + 1:]]
+            solid = [vector for vector, count in templates if count >= MIN_SAMPLES]
+            strong += len(solid) >= 2 and min(
+                float(a @ b) for i, a in enumerate(solid) for b in solid[i + 1:]) >= 0.6
+            people.append({"person": key, "groups": groups, "lowest_similarity": min(pairs)})
+        return established, people, int(strong)
+
+    established, people, strong = seen_again(resolved.assignments)
+    # The same question under the shipped prior, which merges only near 0.60: a floor
+    # for the answer, since the fitted threshold sits close to the highest impostor seen.
+    prior = resolution.Calibration()
+    strict = seen_again(resolution.resolve(store, args.event, config=config, calibration=prior).assignments)
 
     scores = np.asarray(impostors)
     report = {
@@ -228,7 +252,14 @@ def main() -> None:
         "gap_minutes": args.gap_minutes,
         "seen_on_two_or_more_occasions": len(people),
         # Both occasions have three or more faces and their templates agree at 0.6 or more.
-        "of_those_with_strong_evidence_each_time": int(strong),
+        "of_those_with_strong_evidence_each_time": strong,
+        "under_the_stricter_default_calibration": {
+            "automatic_merge_at_similarity": round(
+                (resolution._logit(config.auto_probability) - prior.intercept) / prior.slope, 3),
+            "people_with_three_or_more_faces": len(strict[0]),
+            "seen_on_two_or_more_occasions": len(strict[1]),
+            "of_those_with_strong_evidence_each_time": strict[2],
+        },
         "occasions_per_person": {
             str(count): sum(len(p["groups"]) == count for p in people)
             for count in sorted({len(p["groups"]) for p in people})
@@ -239,7 +270,7 @@ def main() -> None:
             parser.error("--sheets needs --spool and --models-root")
         out = Path(args.sheets)
         out.mkdir(parents=True, exist_ok=True)
-        report["sheets"] = write_sheets(people, tracklets, args, out)
+        report["sheets"] = write_sheets(people, established, tracklets, args, out)
     print(json.dumps(report, indent=2))
 
 
