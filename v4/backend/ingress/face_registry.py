@@ -75,8 +75,20 @@ def recount(db, event_id: str) -> None:
 
 
 class FaceRegistry:
-    def __init__(self, store: EventStore, event_id: str, camera_id: str | None = None):
+    def __init__(
+        self,
+        store: EventStore,
+        event_id: str,
+        camera_id: str | None = None,
+        cluster_link: float = 0.5,
+    ):
         self.store = store
+        # Pairwise similarity that ties one track's face samples together. 0.5 was set
+        # for buffalo_l; a recognizer with a lower same-person spread (KP-RPE: same-frame
+        # impostor p99 about 0.40) can use a lower link without merging two people.
+        if not 0 < cluster_link < 1:
+            raise ValueError("cluster_link must be between 0 and 1")
+        self.cluster_link = cluster_link
         self.event_id = event_id
         # Tracklet evidence is persisted only for a named camera view.
         self.camera_id = camera_id
@@ -175,7 +187,7 @@ class FaceRegistry:
                 return state
             if (
                 not state.conflicts
-                or float(vector @ normalized(np.mean(state.conflicts, axis=0))) < 0.5
+                or float(vector @ normalized(np.mean(state.conflicts, axis=0))) < self.cluster_link
             ):
                 state.conflicts = [vector]
                 state.resolve_after = observed_at or utc_now()
@@ -200,7 +212,9 @@ class FaceRegistry:
         for seed, row in enumerate(similarities):
             group = [seed]
             for index in np.argsort(-row):
-                if index != seed and all(similarities[index, member] >= 0.5 for member in group):
+                if index != seed and all(
+                    similarities[index, member] >= self.cluster_link for member in group
+                ):
                     group.append(int(index))
             groups.append(group)
         winner = max(groups, key=len)

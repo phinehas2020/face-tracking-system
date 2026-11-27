@@ -209,7 +209,19 @@ CREATE TABLE IF NOT EXISTS activity_windows (
     created_at TEXT NOT NULL
 );
 
+-- A plain entry tally on the counting camera: one direction across its own line,
+-- inside a band of rows. Independent of passages, faces and the main counting line.
+CREATE TABLE IF NOT EXISTS side_entries (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    camera_id TEXT NOT NULL,
+    track_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    y REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_activity_event_time ON activity_windows(event_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_side_entries_event_time ON side_entries(event_id, observed_at);
 CREATE INDEX IF NOT EXISTS idx_passages_event_time ON passages(event_id, observed_at);
 CREATE INDEX IF NOT EXISTS idx_passages_identity ON passages(identity_id);
 CREATE INDEX IF NOT EXISTS idx_links_event_status ON identity_links(event_id, status);

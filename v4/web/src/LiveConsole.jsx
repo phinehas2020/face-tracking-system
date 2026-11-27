@@ -46,7 +46,9 @@ export function LiveConsole({ status, error, frame, facingFrame, connected, hist
   const lineSummary = !calibration ? "Loading" : calibration.gate_start ? "Drawn gate" : `${calibration.axis === "vertical" ? "Vertical" : "Horizontal"} line at ${Math.round(calibration.position * 100)}%`;
   const state = error ? "Service unavailable" : connected ? (status.paused ? "Counting paused" : "Station live") : status?.status === "error" ? "Processing error" : "Connecting cameras";
 
+  const side = status?.side_entries;
   const tiles = [
+    ...(side ? [["Side entries", side.count, `${side.last_hour} in the last hour · left to right, tent floor`]] : []),
     ["Entries", status?.counts?.in, lastHour ? `${lastHour.in} in the last hour` : "Counted crossings in"],
     ["Exits", status?.counts?.out, lastHour ? `${lastHour.out} in the last hour` : "Counted crossings out"],
     ["In view now", connected && !status?.paused ? status.people_visible : null, "People on the counting camera"],
@@ -67,7 +69,7 @@ export function LiveConsole({ status, error, frame, facingFrame, connected, hist
     </header>
     {error || status?.error || facing?.error ? <p className="live-alert" role="alert">{error || status?.error || facing?.error}</p> : null}
 
-    <section className="console-tiles" aria-label="Live counts">
+    <section className="console-tiles" aria-label="Live counts" style={{ "--tiles": tiles.length }}>
       {tiles.map(([label, value, note]) => <div key={label}><span>{label}</span><b>{value ?? "—"}</b><small>{note}</small></div>)}
     </section>
 

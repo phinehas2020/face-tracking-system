@@ -265,6 +265,9 @@ class LiveFaceEncoder:
         person_rois: bool = False,
         max_person_rois: int = 4,
         tap=None,
+        max_yaw_degrees: float | None = None,
+        max_pitch_degrees: float | None = None,
+        small_face_min_det: float = 0.85,
     ) -> None:
         import onnxruntime as ort
 
@@ -279,6 +282,19 @@ class LiveFaceEncoder:
             raise ValueError("Face det_size must be a positive multiple of 32")
         if max_person_rois < 0:
             raise ValueError("max_person_rois cannot be negative")
+        # A station may widen the class defaults for a recognizer measured to hold up
+        # at larger angles and lower detector scores on its own faces.
+        self.max_yaw_degrees = float(
+            self.MAX_YAW_DEGREES if max_yaw_degrees is None else max_yaw_degrees
+        )
+        self.max_pitch_degrees = float(
+            self.MAX_PITCH_DEGREES if max_pitch_degrees is None else max_pitch_degrees
+        )
+        self.small_face_min_det = float(small_face_min_det)
+        if not (0 < self.max_yaw_degrees <= 90 and 0 < self.max_pitch_degrees <= 90):
+            raise ValueError("Face pose limits must be between 0 and 90 degrees")
+        if not 0 < self.small_face_min_det <= 1:
+            raise ValueError("small_face_min_det must be in (0, 1]")
         self.requested_provider = provider
         self.det_size = det_size
         self.person_rois = person_rois
@@ -291,8 +307,9 @@ class LiveFaceEncoder:
         self.recognizer = load()
         self.recognizer_errors = 0
         self.pose_gate = {
-            "max_yaw_degrees": self.MAX_YAW_DEGREES,
-            "max_pitch_degrees": self.MAX_PITCH_DEGREES,
+            "max_yaw_degrees": self.max_yaw_degrees,
+            "max_pitch_degrees": self.max_pitch_degrees,
+            "small_face_min_det": self.small_face_min_det,
             "accepted": 0,
             "rejected_angle": 0,
             "rejected_missing_pose": 0,
@@ -388,7 +405,12 @@ class LiveFaceEncoder:
         result = []
         tap = getattr(self, "tap", None)
         tapped = []
-        pose_counts = {"accepted": 0, "rejected_angle": 0, "rejected_missing_pose": 0}
+        pose_counts = {
+            "accepted": 0,
+            "rejected_angle": 0,
+            "rejected_missing_pose": 0,
+            "rejected_small_face": 0,
+        }
         empty = [0] * (len(self.POSE_BUCKETS) + 1)
         histograms = {"yaw_histogram": list(empty), "pitch_histogram": list(empty)}
         for image, origin in regions:
@@ -425,7 +447,9 @@ class LiveFaceEncoder:
                         "accepted": False,
                     }
                     tapped.append(seen)
-                if abs(yaw) > self.MAX_YAW_DEGREES or abs(pitch) > self.MAX_PITCH_DEGREES:
+                max_yaw = getattr(self, "max_yaw_degrees", self.MAX_YAW_DEGREES)
+                max_pitch = getattr(self, "max_pitch_degrees", self.MAX_PITCH_DEGREES)
+                if abs(yaw) > max_yaw or abs(pitch) > max_pitch:
                     pose_counts["rejected_angle"] += 1
                     continue
                 if quality < 0.7:
@@ -435,7 +459,9 @@ class LiveFaceEncoder:
                         continue
                     eye_span = float(points[1][0] - points[0][0])
                     nose_fraction = float(points[2][0] - points[0][0]) / max(eye_span, 1)
-                    if face.det_score < 0.85 or eye_span < 12 or not 0.2 <= nose_fraction <= 0.8:
+                    min_det = getattr(self, "small_face_min_det", 0.85)
+                    if face.det_score < min_det or eye_span < 12 or not 0.2 <= nose_fraction <= 0.8:
+                        pose_counts["rejected_small_face"] += 1
                         continue
                 recognizer = getattr(self, "recognizer", None)
                 if recognizer is not None:
@@ -465,8 +491,9 @@ class LiveFaceEncoder:
         # Publish a new dictionary atomically for the async worker's diagnostics.
         previous = getattr(self, "pose_gate", {})
         self.pose_gate = {
-            "max_yaw_degrees": self.MAX_YAW_DEGREES,
-            "max_pitch_degrees": self.MAX_PITCH_DEGREES,
+            "max_yaw_degrees": getattr(self, "max_yaw_degrees", self.MAX_YAW_DEGREES),
+            "max_pitch_degrees": getattr(self, "max_pitch_degrees", self.MAX_PITCH_DEGREES),
+            "small_face_min_det": getattr(self, "small_face_min_det", 0.85),
             **{key: previous.get(key, 0) + value for key, value in pose_counts.items()},
             "pose_bucket_upper_degrees": [*self.POSE_BUCKETS, None],
             **{

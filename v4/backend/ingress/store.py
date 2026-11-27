@@ -405,6 +405,7 @@ class EventStore:
                 "identity_links",
                 "replay_runs",
                 "timeline_samples",
+                "side_entries",
                 "audit_log",
             ):
                 counts[table] = connection.execute(

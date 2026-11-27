@@ -68,6 +68,26 @@ class LiveControl(BaseModel):
     paused: bool
 
 
+class SideEntryGate(BaseModel):
+    """A plain entry tally: one direction across a vertical line, inside a band of rows.
+
+    It shares the tracker with the main counter but keeps its own line, so moving the
+    main counting line never changes it. Rows outside [y_min, y_max] (people walking
+    behind a booth or out in the field) are not counted.
+    """
+
+    position: float = Field(default=0.5, ge=0.05, le=0.95)
+    y_min: float = Field(default=0.0, ge=0, le=1)
+    y_max: float = Field(default=1.0, ge=0, le=1)
+    entry_positive: bool = True
+
+    @model_validator(mode="after")
+    def validate_band(self):
+        if self.y_min >= self.y_max:
+            raise ValueError("Side entry band must have positive height")
+        return self
+
+
 class ActivityLabel(BaseModel):
     entries: int = Field(ge=0, le=50)
     exits: int = Field(ge=0, le=50)
@@ -168,6 +188,15 @@ class CameraConfig:
     face_det_size: int = 1280
     face_person_rois: bool = False
     async_faces: bool = False
+    # Face gates; the defaults were set for buffalo_l. Recognizers that hold up at wider
+    # angles and smaller faces (e.g. KP-RPE) can open them per station.
+    face_max_yaw: float = 25.0
+    face_max_pitch: float = 20.0
+    face_small_min_det: float = 0.85
+    # Pairwise similarity that ties a track's face samples into one consistent cluster.
+    face_cluster_link: float = 0.5
+    # Optional plain entry tally on the counting camera (see SideEntryGate).
+    side_entry_gate: dict | None = None
     appearance_model: str | None = None
     target_fps: float = 10.0
     association_threshold: float = 0.85
@@ -212,6 +241,11 @@ class LiveSession:
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.calibration = LiveCalibration()
+        self.side_entry_gate = (
+            SideEntryGate(**self.config.side_entry_gate)
+            if self.config.side_entry_gate and self.config.count_passages
+            else None
+        )
         self.counter = self._new_counter()
         self.paused = False
         self.status = "starting"
@@ -267,6 +301,18 @@ class LiveSession:
             self.runtime["frames_with_people"] = self._busy_frames
 
     def _new_counter(self):
+        # Every reset of the main counter (reconnect, recalibration) also drops the side
+        # entry tally's in-flight crossings; recorded entries are kept.
+        gate = getattr(self, "side_entry_gate", None)
+        self.side_entry_counter = (
+            CrossingCounter(
+                LiveCalibration(
+                    axis="vertical", position=gate.position, entry_positive=gate.entry_positive
+                )
+            )
+            if gate
+            else None
+        )
         if self.calibration.counting_mode == "trajectory":
             from .live_counting import PassageCalibration, PassageCounter
 
@@ -306,7 +352,9 @@ class LiveSession:
             ).fetchone()
             self.calibration = LiveCalibration.model_validate_json(saved[0])
             self.counter = self._new_counter()
-        self.face_registry = FaceRegistry(self.store, self.event_id, self.camera_id)
+        self.face_registry = FaceRegistry(
+            self.store, self.event_id, self.camera_id, cluster_link=self.config.face_cluster_link
+        )
         if start_workers:
             # Loaded here, before any camera thread exists; a failure stops the start.
             load_recognizer()
@@ -492,6 +540,26 @@ class LiveSession:
                 captured_at if captured_at is not None else time.monotonic(),
                 direction=direction,
                 known_identity=identity_id,
+            )
+
+    def _update_side_entry(self, key, track_id, x, y, now, observed_at):
+        """Count a left-to-right (entry side) crossing of the side entry line in its band."""
+        gate = self.side_entry_gate
+        direction = self.side_entry_counter.update(track_id, (x, y), now)
+        if direction != "in" or not gate.y_min <= y <= gate.y_max:
+            return
+        with self.store.transaction() as db:
+            db.execute(
+                "INSERT INTO side_entries (id,event_id,camera_id,track_id,observed_at,y) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    str(uuid.uuid4()),
+                    self.event_id,
+                    self.camera_id,
+                    key,
+                    observed_at or utc_now(),
+                    round(y, 4),
+                ),
             )
 
     def _resolve_cross_view(self, now):
@@ -767,6 +835,9 @@ class LiveSession:
                         det_size=self.config.face_det_size,
                         person_rois=self.config.face_person_rois,
                         tap=self.face_spool.offer if self.face_spool else None,
+                        max_yaw_degrees=self.config.face_max_yaw,
+                        max_pitch_degrees=self.config.face_max_pitch,
+                        small_face_min_det=self.config.face_small_min_det,
                     )
                 )
                 self.face_worker.start()
@@ -1068,6 +1139,9 @@ class LiveSession:
                         )
                         if direction and self.config.count_passages:
                             self._record(key, direction, observed_at, captured_at=tracking_time)
+                        if self.side_entry_counter is not None:
+                            self._update_side_entry(key, track.track_id, x / width, y / height,
+                                                    tracking_time, observed_at)
                         left, top, right, bottom = map(int, track.bbox)
                         cv2.rectangle(display, (left, top), (right, bottom), (150, 210, 40), 2)
                         label = (
@@ -1102,6 +1176,8 @@ class LiveSession:
                             cv2.rectangle(display, (left, top), (right, bottom), (220, 160, 100), 2)
                     self._resolve_cross_view(tracking_time)
                     self.counter.expire(tracking_time)
+                    if self.side_entry_counter is not None:
+                        self.side_entry_counter.expire(tracking_time)
                     if replay and hasattr(self, "append_evidence"):
                         self.append_evidence(
                             tracks, registry, namespace, observed_at, tracking_time, width, height
@@ -1119,6 +1195,16 @@ class LiveSession:
                     else:
                         start = (int(width * config.segment_start), int(height * config.position))
                         end = (int(width * config.segment_end), start[1])
+                    if self.side_entry_gate is not None:
+                        gate = self.side_entry_gate
+                        band_x = int(width * gate.position)
+                        cv2.line(
+                            display,
+                            (band_x, int(height * gate.y_min)),
+                            (band_x, int(height * gate.y_max)),
+                            (80, 200, 60),
+                            8,
+                        )
                     if self.config.count_passages:
                         cv2.line(display, start, end, (60, 140, 240), 2)
                         cv2.circle(display, start, 5, (60, 140, 240), -1)
@@ -1246,6 +1332,20 @@ class LiveSession:
                 (self.event_id,),
             ).fetchall()
             payload["counts"] = {"in": 0, "out": 0, **{row[0]: row[1] for row in rows}}
+            if self.side_entry_gate is not None:
+                hour_ago = (datetime.now(UTC) - timedelta(hours=1)).isoformat(
+                    timespec="milliseconds"
+                )
+                total, last_hour = db.execute(
+                    "SELECT COUNT(*), COUNT(CASE WHEN observed_at>=? THEN 1 END) "
+                    "FROM side_entries WHERE event_id=? AND camera_id=?",
+                    (hour_ago, self.event_id, self.camera_id),
+                ).fetchone()
+                payload["side_entries"] = {
+                    "count": total,
+                    "last_hour": last_hour,
+                    "gate": self.side_entry_gate.model_dump(),
+                }
             payload["recent"] = [
                 dict(row)
                 for row in db.execute(
