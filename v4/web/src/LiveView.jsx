@@ -96,8 +96,10 @@ export function LiveView() {
     return () => { stopped = true; controller.abort(); clearTimeout(timer); if (previous) URL.revokeObjectURL(previous); };
   }, [status?.is_dual_live]);
 
+  // A counting-only station (faces off) uses the station console as well.
+  const station = Boolean(status?.is_dual_live || status?.face_status === "off");
   useEffect(() => {
-    if (!status?.is_dual_live) return;
+    if (!station) return;
     let stopped = false, timer;
     const poll = async () => {
       // A station running older software has no history; the chart is then left out.
@@ -109,7 +111,7 @@ export function LiveView() {
     };
     poll();
     return () => { stopped = true; clearTimeout(timer); };
-  }, [status?.is_dual_live]);
+  }, [station]);
 
   const mutate = async (path, method, data) => {
     setBusy(true);
@@ -144,7 +146,7 @@ export function LiveView() {
   };
   const runtimeLabel = (runtime) => `${runtime?.detector_device === "mps" ? "Apple GPU" : runtime?.detector_device || "Loading"} detection · ${runtime?.face_provider === "CoreMLExecutionProvider" ? "CoreML" : runtime?.face_provider === "CPUExecutionProvider" ? "CPU" : "Loading"} face analysis`;
 
-  if (dual) return <LiveConsole status={status} error={error} frame={frame} facingFrame={facingFrame} connected={connected} history={history} shadow={shadow} calibration={calibration} setCalibration={setCalibration} mutate={mutate} busy={busy} dirty={dirty} drawingGate={drawingGate} setDrawingGate={setDrawingGate} firstGatePoint={firstGatePoint} setFirstGatePoint={setFirstGatePoint} chooseGatePoint={chooseGatePoint} entryDirection={entryDirection} />;
+  if (station) return <LiveConsole status={status} error={error} frame={frame} facingFrame={facingFrame} connected={connected} history={history} shadow={shadow} calibration={calibration} setCalibration={setCalibration} mutate={mutate} busy={busy} dirty={dirty} drawingGate={drawingGate} setDrawingGate={setDrawingGate} firstGatePoint={firstGatePoint} setFirstGatePoint={setFirstGatePoint} chooseGatePoint={chooseGatePoint} entryDirection={entryDirection} />;
 
   return <main className="live-shell">
     <header className="live-header">

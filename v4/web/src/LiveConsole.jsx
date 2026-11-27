@@ -24,7 +24,7 @@ function Camera({ title, cam, frame, alt, waiting, drawing, onClick, children })
       {frame ? <img src={frame} alt={alt} /> : <div className="console-wait"><Aperture size={36} /><strong>{waiting}</strong></div>}
       {children}
     </div>
-    <footer><span>{cam?.processing_fps ?? "—"} fps</span><span>{cam?.frame_age_ms ?? "—"} ms behind</span><span>{cam?.people_visible ?? 0} in view</span><span>{device(cam?.runtime)} · {provider(cam?.runtime)}</span></footer>
+    <footer><span>{cam?.processing_fps ?? "—"} fps</span><span>{cam?.frame_age_ms ?? "—"} ms behind</span><span>{cam?.people_visible ?? 0} in view</span><span>{device(cam?.runtime)} · {cam?.face_status === "off" ? "faces off" : provider(cam?.runtime)}</span></footer>
   </section>;
 }
 
@@ -47,15 +47,18 @@ export function LiveConsole({ status, error, frame, facingFrame, connected, hist
   const state = error ? "Service unavailable" : connected ? (status.paused ? "Counting paused" : "Station live") : status?.status === "error" ? "Processing error" : "Connecting cameras";
 
   const side = status?.side_entries;
+  const facesOn = status?.face_status !== "off";
   const tiles = [
     ...(side ? [["Side entries", side.count, `${side.last_hour} in the last hour · left to right, tent floor`]] : []),
     ["Entries", status?.counts?.in, lastHour ? `${lastHour.in} in the last hour` : "Counted crossings in"],
     ["Exits", status?.counts?.out, lastHour ? `${lastHour.out} in the last hour` : "Counted crossings out"],
     ["In view now", connected && !status?.paused ? status.people_visible : null, "People on the counting camera"],
-    ["Face-linked", recognition?.unique_attendees, "Distinct faces tied to an entry"],
-    ["Repeat entries", recognition?.repeat_entries, "Returning visitors"],
-    ["Unresolved", recognition?.unresolved_entries, "Entries with no face match"],
-    ["Face profiles", recognition?.known_faces, "Enrolled; not a headcount"],
+    ...(facesOn ? [
+      ["Face-linked", recognition?.unique_attendees, "Distinct faces tied to an entry"],
+      ["Repeat entries", recognition?.repeat_entries, "Returning visitors"],
+      ["Unresolved", recognition?.unresolved_entries, "Entries with no face match"],
+      ["Face profiles", recognition?.known_faces, "Enrolled; not a headcount"],
+    ] : []),
   ];
 
   return <main className="console">
@@ -75,13 +78,13 @@ export function LiveConsole({ status, error, frame, facingFrame, connected, hist
 
     <div className="console-body">
       <div className="console-main">
-        <div className="console-cameras">
+        <div className={`console-cameras ${facing ? "" : "single"}`}>
           <Camera title="Side · counting" cam={status} frame={error ? null : frame} alt="Side camera with tracked people and the counting line" waiting="Waiting for the side camera" drawing={drawingGate} onClick={chooseGatePoint}>
             {firstGatePoint ? <span className="console-gate-point" style={{ left: `${firstGatePoint[0] * 100}%`, top: `${firstGatePoint[1] * 100}%` }} /> : null}
             {drawingGate ? <span className="console-well-label">{firstGatePoint ? "Click the other end of the gate" : "Click one end of the gate"}</span> : null}
             {status?.paused ? <span className="console-well-label">COUNTING PAUSED</span> : null}
           </Camera>
-          <Camera title="Facing · faces" cam={facing} frame={facingFrame} alt="Facing camera recognizing visitors" waiting="Reconnecting the facing camera" />
+          {facing ? <Camera title="Facing · faces" cam={facing} frame={facingFrame} alt="Facing camera recognizing visitors" waiting="Reconnecting the facing camera" /> : null}
         </div>
         {buckets ? <section className="console-panel console-flow">
           <h2><strong>Passages over time</strong><span>Last 6 hours · 10-minute bars</span><i className="key in" />Entries<i className="key out" />Exits</h2>
@@ -91,14 +94,16 @@ export function LiveConsole({ status, error, frame, facingFrame, connected, hist
           <h2>Station health</h2>
           <dl>
             <div><dt>Counting speed</dt><dd>{status?.processing_fps ?? "—"} fps{status?.runtime?.fps_with_people != null ? ` · ${status.runtime.fps_with_people} with people` : ""}</dd></div>
-            <div><dt>Face camera speed</dt><dd>{facing?.processing_fps ?? "—"} fps{facing?.runtime?.fps_with_people != null ? ` · ${facing.runtime.fps_with_people} with people` : ""}</dd></div>
-            <div><dt>Faces usable</dt><dd>{posed ? `${pose.accepted} of ${posed} · ${Math.round(100 * pose.accepted / posed)}%` : "None seen yet"}</dd></div>
-            <div><dt>Camera matching</dt><dd>{link ? `${link.linked} linked · ${link.pending} pending` : "—"}</dd></div>
+            {facing ? <>
+              <div><dt>Face camera speed</dt><dd>{facing?.processing_fps ?? "—"} fps{facing?.runtime?.fps_with_people != null ? ` · ${facing.runtime.fps_with_people} with people` : ""}</dd></div>
+              <div><dt>Faces usable</dt><dd>{posed ? `${pose.accepted} of ${posed} · ${Math.round(100 * pose.accepted / posed)}%` : "None seen yet"}</dd></div>
+              <div><dt>Camera matching</dt><dd>{link ? `${link.linked} linked · ${link.pending} pending` : "—"}</dd></div>
+            </> : <div><dt>Mode</dt><dd>Counting only · faces off</dd></div>}
             <div><dt>Detector</dt><dd>{status?.runtime?.detector_model || "—"} at {status?.runtime?.detector_imgsz || "—"} px</dd></div>
             <div><dt>Camera restarts</dt><dd>{(status?.capture_restarts ?? 0) + (facing?.capture_restarts ?? 0)}</dd></div>
           </dl>
         </section>
-        <ShadowPanel shadow={shadow} />
+        {facesOn ? <ShadowPanel shadow={shadow} /> : null}
       </div>
 
       <aside className="console-side">
@@ -112,14 +117,14 @@ export function LiveConsole({ status, error, frame, facingFrame, connected, hist
           {formOpen ? <LineForm calibration={calibration} setCalibration={setCalibration} mutate={mutate} busy={busy} dirty={dirty} replay={false} paired={false} complete={false} drawingGate={drawingGate} setDrawingGate={setDrawingGate} setFirstGatePoint={setFirstGatePoint} entryDirection={entryDirection} /> : null}
         </section>
 
-        <section className="console-panel">
+        {facesOn ? <section className="console-panel">
           <h2>Recognized visitors <span>{visitors.length}</span></h2>
           {visitors.length ? <div className="console-visitors">{visitors.map((visitor) => <article key={visitor.identity_id}>
             {visitor.has_preview ? <img src={`/api/live/faces/${visitor.identity_id}/preview.jpg`} alt={`${visitor.label} saved face`} /> : <div className="console-face-empty">Pending</div>}
             <div><strong>{visitor.label}</strong><p>{visitor.entries ? `${visitor.entries} ${visitor.entries === 1 ? "entry" : "entries"}${visitor.entries > 1 ? ` · ${visitor.entries - 1} repeat` : ""}` : "Seen · no entry yet"}</p></div>
             <small>{visitor.samples} samples</small>
           </article>)}</div> : <p className="console-empty">No face enrolled yet.</p>}
-        </section>
+        </section> : null}
 
         <section className="console-panel">
           <h2>Recent passages <span>Latest {recent.length}</span></h2>
