@@ -198,6 +198,7 @@ class CameraConfig:
     # Optional plain entry tally on the counting camera (see SideEntryGate).
     side_entry_gate: dict | None = None
     appearance_model: str | None = None
+    appearance_device: str = "auto"
     target_fps: float = 10.0
     association_threshold: float = 0.85
     association_margin: float = 0.08
@@ -817,8 +818,11 @@ class LiveSession:
                 try:
                     from .vision.reid import AppearanceEncoder
 
-                    appearance_encoder = AppearanceEncoder(self.config.appearance_model)
+                    appearance_encoder = AppearanceEncoder(
+                        self.config.appearance_model, device=self.config.appearance_device
+                    )
                     self.runtime["appearance"] = "osnet"
+                    self.runtime["appearance_device"] = appearance_encoder.device
                 except Exception as exc:
                     self.runtime["appearance"] = f"unavailable ({type(exc).__name__})"
             last_appearance = -1.0

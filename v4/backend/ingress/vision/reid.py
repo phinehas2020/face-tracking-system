@@ -10,13 +10,17 @@ from .accelerator import mps_guard, serialized_mps
 
 
 class AppearanceEncoder:
-    def __init__(self, weights):
+    def __init__(self, weights, *, device="auto"):
         import torch
         from torchvision import transforms
 
         from .osnet_vendor import osnet_x1_0
 
-        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
+        if device not in {"auto", "cpu", "mps"}:
+            raise ValueError("Appearance device must be auto, cpu, or mps")
+        self.device = device
+        if device == "auto":
+            self.device = "mps" if torch.backends.mps.is_available() else "cpu"
         with mps_guard(self.device):
             state = torch.load(weights, map_location="cpu", weights_only=True)
             state = state.get("state_dict", state)
