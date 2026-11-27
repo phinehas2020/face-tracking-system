@@ -197,6 +197,10 @@ class CameraConfig:
     face_cluster_link: float = 0.5
     # Optional plain entry tally on the counting camera (see SideEntryGate).
     side_entry_gate: dict | None = None
+    # Published entries = counted entries x this. Set from a recount of the station's own
+    # recordings when it is known to miss crossings; raw counts stay in the database and
+    # under "counts_raw". Exits are not scaled.
+    entry_count_scale: float = 1.0
     appearance_model: str | None = None
     target_fps: float = 10.0
     association_threshold: float = 0.85
@@ -238,6 +242,9 @@ class LiveSession:
         self.model_path = model_path
         self.event_id = self.config.event_id
         self.camera_id = self.config.camera_id
+        scale = self.config.entry_count_scale
+        if not (isinstance(scale, int | float) and math.isfinite(scale) and 1 <= scale <= 10):
+            raise ValueError("entry_count_scale must be between 1 and 10")
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.calibration = LiveCalibration()
@@ -1331,7 +1338,10 @@ class LiveSession:
                 "SELECT direction,COUNT(*) FROM passages WHERE event_id=? GROUP BY direction",
                 (self.event_id,),
             ).fetchall()
-            payload["counts"] = {"in": 0, "out": 0, **{row[0]: row[1] for row in rows}}
+            raw = {"in": 0, "out": 0, **{row[0]: row[1] for row in rows}}
+            payload["counts"] = {**raw, "in": self.scaled_entries(raw["in"])}
+            if self.config.entry_count_scale != 1:
+                payload["counts_raw"] = raw
             if self.side_entry_gate is not None:
                 hour_ago = (datetime.now(UTC) - timedelta(hours=1)).isoformat(
                     timespec="milliseconds"
@@ -1342,8 +1352,9 @@ class LiveSession:
                     (hour_ago, self.event_id, self.camera_id),
                 ).fetchone()
                 payload["side_entries"] = {
-                    "count": total,
-                    "last_hour": last_hour,
+                    "count": self.scaled_entries(total),
+                    "last_hour": self.scaled_entries(last_hour),
+                    "count_raw": total,
                     "gate": self.side_entry_gate.model_dump(),
                 }
             payload["recent"] = [
@@ -1361,6 +1372,9 @@ class LiveSession:
             passage["identity_basis"] = evidence.get("identity_basis")
             passage["reviewed_replay"] = bool(evidence.get("reviewed_replay"))
         return payload
+
+    def scaled_entries(self, count: int) -> int:
+        return round(count * self.config.entry_count_scale)
 
     def calibrate(self, calibration: LiveCalibration) -> None:
         with self.lock:
@@ -1418,7 +1432,11 @@ def live_router() -> APIRouter:
         return {
             "bucket_seconds": step,
             "buckets": [
-                {"start": datetime.fromtimestamp(start, UTC).isoformat(), **counts}
+                {
+                    "start": datetime.fromtimestamp(start, UTC).isoformat(),
+                    **counts,
+                    "in": value.scaled_entries(counts["in"]),
+                }
                 for start, counts in buckets.items()
             ],
         }

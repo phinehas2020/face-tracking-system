@@ -137,3 +137,56 @@ def test_cluster_link_must_be_a_similarity(tmp_path, monkeypatch):
     session = make_session(tmp_path, monkeypatch)
     with pytest.raises(ValueError):
         FaceRegistry(session.store, session.event_id, cluster_link=1.5)
+
+
+def add_passages(session, directions):
+    with session.store.transaction() as db:
+        for index, direction in enumerate(directions):
+            db.execute(
+                "INSERT INTO passages (id,event_id,camera_id,lane,track_id,observed_at,direction,"
+                "status) VALUES (?,?,?,?,?,?,?,?)",
+                (f"p{index}", session.event_id, session.camera_id, "live", f"t{index}",
+                 datetime.now(UTC).isoformat(timespec="milliseconds"), direction, "unresolved"),
+            )
+
+
+def test_entry_scale_publishes_scaled_entries_and_keeps_the_raw_count(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from ingress.live import live_router
+
+    session = make_session(
+        tmp_path, monkeypatch, entry_count_scale=2.4,
+        side_entry_gate={"position": 0.5, "y_min": 0.6, "y_max": 1.0},
+    )
+    add_passages(session, ["in"] * 10 + ["out"] * 3)
+    walk(session, "entering", [0.2] * 3 + [0.8] * 4, 0.8, 10)
+    snapshot = session.snapshot()
+    assert snapshot["counts"] == {"in": 24, "out": 3}
+    assert snapshot["counts_raw"] == {"in": 10, "out": 3}
+    assert snapshot["side_entries"]["count"] == 2
+    assert snapshot["side_entries"]["count_raw"] == 1
+    app = FastAPI()
+    app.include_router(live_router())
+    app.state.live = session
+    buckets = TestClient(app).get("/api/live/history").json()["buckets"]
+    assert sum(bucket["in"] for bucket in buckets) == 24
+    assert sum(bucket["out"] for bucket in buckets) == 3
+
+
+def test_entry_scale_defaults_to_raw_counts(tmp_path, monkeypatch):
+    session = make_session(tmp_path, monkeypatch)
+    add_passages(session, ["in"] * 5)
+    snapshot = session.snapshot()
+    assert snapshot["counts"] == {"in": 5, "out": 0}
+    assert "counts_raw" not in snapshot
+
+
+@pytest.mark.parametrize("scale", [0.5, 11, float("nan"), "2"])
+def test_entry_scale_must_be_a_sane_multiplier(tmp_path, monkeypatch, scale):
+    config = tmp_path / "camera.json"
+    config.write_text(json.dumps({"host": "192.0.2.1", "entry_count_scale": scale}))
+    store = EventStore(tmp_path / "data")
+    store.initialize()
+    with pytest.raises(ValueError, match="entry_count_scale"):
+        LiveSession(store, config, "unused.pt")
