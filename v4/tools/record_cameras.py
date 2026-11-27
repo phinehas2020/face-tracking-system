@@ -135,32 +135,76 @@ def duration(path: Path) -> float:
         return 0.0
 
 
+PROBE = (
+    "import pathlib, sys; p = pathlib.Path(sys.argv[1]); p.mkdir(parents=True, exist_ok=True); "
+    "t = p / '.write-test'; t.write_bytes(b'ok'); t.unlink()"
+)
+
+
+def writable(folder: Path, timeout: float = 15.0) -> str | None:
+    """None when FOLDER can be created and written, else the reason.
+
+    A macOS privacy prompt for a removable volume blocks file calls until someone answers
+    it on the Mac's screen, so the probe runs in a child process with a timeout.
+    """
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", PROBE, str(folder)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return "blocked (a macOS permission prompt may be waiting on the booth's screen)"
+    if done.returncode:
+        lines = done.stderr.strip().splitlines() or ["unknown error"]
+        return f"not writable ({lines[-1][:160]})"
+    return None
+
+
 def archive_root(root: Path, external: Path | None, reported: dict) -> Path:
     """The external drive when it is mounted, writable and has room; else the internal disk."""
-    if external is not None:
-        mount = Path(*external.parts[:3]) if str(external).startswith("/Volumes/") else None
-        reason = None
-        if mount is None or not os.path.ismount(mount):
-            reason = "not mounted"
-        else:
-            try:
-                external.mkdir(parents=True, exist_ok=True)
-                probe = external / ".write-test"
-                probe.write_bytes(b"ok")
-                probe.unlink()
-                if shutil.disk_usage(external).free < 20e9:
-                    reason = "under 20 GB free"
-            except OSError as exc:
-                reason = f"not writable ({type(exc).__name__}: {exc})"
-        if reason is None:
-            if reported.get("state") != "external":
-                log("archive on", external)
-                reported["state"] = "external"
-            return external
-        if reported.get("state") != reason:
-            log("external archive", reason, "- archiving to the internal disk")
-            reported["state"] = reason
-    return root / "archive"
+    internal = root / "archive"
+    if external is None:
+        return internal
+    now = time.monotonic()
+    if reported.get("state") not in (None, "external") and now - reported.get("checked", 0) < 300:
+        return internal  # re-probe a failing drive every five minutes, not every pass
+    reported["checked"] = now
+    mount = Path(*external.parts[:3]) if str(external).startswith("/Volumes/") else None
+    if mount is None or not os.path.ismount(mount):
+        reason = "not mounted"
+    else:
+        reason = writable(external)
+        if reason is None and shutil.disk_usage(external).free < 20e9:
+            reason = "under 20 GB free"
+    if reason is None:
+        if reported.get("state") != "external":
+            log("archive on", external)
+            reported["state"] = "external"
+        return external
+    if reported.get("state") != reason:
+        log("external archive", reason, "- archiving to the internal disk")
+        reported["state"] = reason
+    return internal
+
+
+def move_to_external(root: Path, external: Path) -> None:
+    """Carry footage archived internally while the drive was away over to the drive."""
+    for source in sorted((root / "archive").glob("*/*.mp4")):
+        if stop.is_set():
+            return
+        target = external / source.parent.name / source.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_suffix(".partial.mp4")
+        shutil.copyfile(source, partial)
+        if partial.stat().st_size != source.stat().st_size:
+            partial.unlink(missing_ok=True)
+            log("copy to the drive failed size check; kept", source.name)
+            return
+        partial.replace(target)
+        source.unlink()
+        log("moved to the drive", source.name)
 
 
 def compact(root: Path, cap_bytes: int, bitrate: str, min_age: float, external: Path | None = None):
@@ -168,6 +212,8 @@ def compact(root: Path, cap_bytes: int, bitrate: str, min_age: float, external: 
     while not stop.is_set():
         try:
             archive = archive_root(root, external, reported)
+            if external is not None and archive == external:
+                move_to_external(root, external)
             segments = []
             for folder in raw.glob("*"):
                 files = sorted(folder.glob("*.mp4"))
