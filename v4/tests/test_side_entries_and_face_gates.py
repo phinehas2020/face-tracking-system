@@ -1,7 +1,7 @@
 """Side entry tally and per-station face gates (KP-RPE stations open them wider)."""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import numpy as np
@@ -139,14 +139,15 @@ def test_cluster_link_must_be_a_similarity(tmp_path, monkeypatch):
         FaceRegistry(session.store, session.event_id, cluster_link=1.5)
 
 
-def add_passages(session, directions):
+def add_passages(session, directions, observed_at=None, prefix="p"):
+    observed_at = observed_at or datetime.now(UTC).isoformat(timespec="milliseconds")
     with session.store.transaction() as db:
         for index, direction in enumerate(directions):
             db.execute(
                 "INSERT INTO passages (id,event_id,camera_id,lane,track_id,observed_at,direction,"
                 "status) VALUES (?,?,?,?,?,?,?,?)",
-                (f"p{index}", session.event_id, session.camera_id, "live", f"t{index}",
-                 datetime.now(UTC).isoformat(timespec="milliseconds"), direction, "unresolved"),
+                (f"{prefix}{index}", session.event_id, session.camera_id, "live",
+                 f"{prefix}{index}", observed_at, direction, "unresolved"),
             )
 
 
@@ -190,3 +191,53 @@ def test_entry_scale_must_be_a_sane_multiplier(tmp_path, monkeypatch, scale):
     store.initialize()
     with pytest.raises(ValueError, match="entry_count_scale"):
         LiveSession(store, config, "unused.pt")
+
+
+def test_entry_scale_changes_at_the_cutoff_without_rescaling_earlier_entries(
+    tmp_path, monkeypatch
+):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from ingress.live import live_router
+
+    now = datetime.now(UTC)
+    cutoff = now.replace(microsecond=0) - timedelta(minutes=30)
+    session = make_session(
+        tmp_path, monkeypatch, entry_count_scale=2.0,
+        entry_count_scale_until=cutoff.astimezone(timezone(timedelta(hours=-6))).isoformat(),
+        entry_count_scale_after=1.25,
+    )
+    early = (cutoff - timedelta(minutes=5)).isoformat(timespec="milliseconds")
+    late = (cutoff + timedelta(minutes=5)).isoformat(timespec="milliseconds")
+    add_passages(session, ["in"] * 10 + ["out"] * 2, early, "early")
+    add_passages(session, ["in"] * 8, late, "late")
+    snapshot = session.snapshot()
+    assert snapshot["counts"] == {"in": 30, "out": 2}  # 10 x 2.0 + 8 x 1.25
+    assert snapshot["counts_raw"] == {"in": 18, "out": 2}
+    app = FastAPI()
+    app.include_router(live_router())
+    app.state.live = session
+    buckets = TestClient(app).get("/api/live/history?bucket_minutes=60").json()["buckets"]
+    assert sum(bucket["in"] for bucket in buckets) == 30
+
+
+def test_entry_scale_cutoff_needs_a_timezone(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="timezone"):
+        make_session(tmp_path, monkeypatch, entry_count_scale_until="2026-11-27T12:00:00")
+
+
+def test_counting_only_station_reports_faces_off(tmp_path, monkeypatch):
+    session = make_session(tmp_path, monkeypatch, faces=False)
+    assert session.config.faces is False
+    assert session.snapshot()["counts"] == {"in": 0, "out": 0}
+
+
+def test_capture_shrinks_wide_frames_and_keeps_their_shape():
+    cv2 = pytest.importorskip("cv2")
+    from ingress.capture_worker import fit_width
+
+    frame = np.zeros((1920, 2560, 3), np.uint8)
+    assert fit_width(frame, 1280, cv2).shape == (960, 1280, 3)
+    assert fit_width(frame, None, cv2) is frame
+    small = np.zeros((480, 640, 3), np.uint8)
+    assert fit_width(small, 1280, cv2) is small

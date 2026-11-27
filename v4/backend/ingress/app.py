@@ -40,7 +40,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
             payload = json.loads(app_settings.live_camera_file.read_text())
             session_type = (
                 DualLiveSession
-                if payload.get("facing_camera")
+                if payload.get("facing_camera") and payload.get("facing_live", True)
                 else PairedSession
                 if payload.get("paired_replay")
                 else RecordedSession

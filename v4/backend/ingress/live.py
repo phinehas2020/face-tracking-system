@@ -199,8 +199,22 @@ class CameraConfig:
     side_entry_gate: dict | None = None
     # Published entries = counted entries x this. Set from a recount of the station's own
     # recordings when it is known to miss crossings; raw counts stay in the database and
-    # under "counts_raw". Exits are not scaled.
+    # under "counts_raw". Exits are not scaled. When the station's miss rate changes (e.g.
+    # it is made faster), entry_count_scale_until (ISO time) ends that period and entries
+    # observed from then on are multiplied by entry_count_scale_after instead.
     entry_count_scale: float = 1.0
+    entry_count_scale_until: str | None = None
+    entry_count_scale_after: float = 1.0
+    # False runs a counting-only station: no face detection or recognition, which frees
+    # the GPU for the person detector.
+    faces: bool = True
+    # False leaves the facing camera out of the live service (it stays in this file for
+    # other readers, e.g. the recorder).
+    facing_live: bool = True
+    # Frames wider than this are shrunk in the capture process before they are passed on.
+    # Re-encoding and decoding every full 2560x1920 frame held Booth One near 8 fps, and the
+    # person detector only looks at about 960 pixels. None keeps the camera's resolution.
+    capture_max_width: int | None = None
     appearance_model: str | None = None
     target_fps: float = 10.0
     association_threshold: float = 0.85
@@ -242,9 +256,16 @@ class LiveSession:
         self.model_path = model_path
         self.event_id = self.config.event_id
         self.camera_id = self.config.camera_id
-        scale = self.config.entry_count_scale
-        if not (isinstance(scale, int | float) and math.isfinite(scale) and 1 <= scale <= 10):
-            raise ValueError("entry_count_scale must be between 1 and 10")
+        for name in ("entry_count_scale", "entry_count_scale_after"):
+            scale = getattr(self.config, name)
+            if not (isinstance(scale, int | float) and math.isfinite(scale) and 1 <= scale <= 10):
+                raise ValueError(f"{name} must be between 1 and 10")
+        self.scale_cutoff = None
+        if self.config.entry_count_scale_until:
+            cutoff = datetime.fromisoformat(self.config.entry_count_scale_until)
+            if cutoff.tzinfo is None:
+                raise ValueError("entry_count_scale_until must include a timezone")
+            self.scale_cutoff = cutoff.astimezone(UTC).isoformat(timespec="milliseconds")
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.calibration = LiveCalibration()
@@ -833,7 +854,8 @@ class LiveSession:
             continuity = TrackContinuity()
             face_continuity = FaceContinuity()
             body_face_refs = {}
-            if advanced:
+            faces_on = self.config.faces
+            if advanced and faces_on:
                 from .live_faces import AsyncFaceWorker, FaceRequest
 
                 self.face_worker = AsyncFaceWorker(
@@ -849,6 +871,10 @@ class LiveSession:
                 )
                 self.face_worker.start()
                 face_encoder = None
+            elif not faces_on:
+                face_encoder = None
+                with self.lock:
+                    self.face_status = "off"
             else:
                 face_encoder = (
                     LiveFaceEncoder(tap=self.face_spool.offer)
@@ -880,7 +906,9 @@ class LiveSession:
                     or (started - frame_time > 3 and not replay)
                     or (replay and paused)
                 ):
-                    self.stop_event.wait(0.03)
+                    # Poll finely: a 30 ms wait for the next frame held a 25 fps camera
+                    # whose frames take 30 ms to analyse near 12 fps.
+                    self.stop_event.wait(0.005)
                     continue
                 last_sequence = sequence
                 if generation != last_generation:
@@ -968,7 +996,7 @@ class LiveSession:
                     if state is None or state.identity_id is None or state.state == "conflict":
                         scan_interval = 1 / 7.5
                         break
-                if advanced:
+                if advanced and self.face_worker:
                     self.face_status = self.face_worker.status
                     self.runtime.update(
                         face_provider=self.face_worker.provider,
@@ -1012,7 +1040,11 @@ class LiveSession:
                                 last_face_seen = tracking_time
                             self.runtime["face_inference_ms"] = round(result.latency_ms, 1)
                         self.runtime["face_delivery"] = dict(self.face_worker.metrics)
-                elif not paused and tracking_time - last_face_scan >= scan_interval - 1e-8:
+                elif (
+                    face_encoder is not None
+                    and not paused
+                    and tracking_time - last_face_scan >= scan_interval - 1e-8
+                ):
                     detections = face_encoder.detect(frame)
                     hints = {}
                     for track in tracks:
@@ -1339,8 +1371,11 @@ class LiveSession:
                 (self.event_id,),
             ).fetchall()
             raw = {"in": 0, "out": 0, **{row[0]: row[1] for row in rows}}
-            payload["counts"] = {**raw, "in": self.scaled_entries(raw["in"])}
-            if self.config.entry_count_scale != 1:
+            later = self._entries_after_cutoff(
+                db, "passages", "AND direction='in'", ()
+            )
+            payload["counts"] = {**raw, "in": self.scaled_entries(raw["in"], later)}
+            if self._scaling:
                 payload["counts_raw"] = raw
             if self.side_entry_gate is not None:
                 hour_ago = (datetime.now(UTC) - timedelta(hours=1)).isoformat(
@@ -1351,9 +1386,15 @@ class LiveSession:
                     "FROM side_entries WHERE event_id=? AND camera_id=?",
                     (hour_ago, self.event_id, self.camera_id),
                 ).fetchone()
+                camera = ("AND camera_id=?", (self.camera_id,))
+                later = self._entries_after_cutoff(db, "side_entries", *camera)
+                later_hour = self._entries_after_cutoff(
+                    db, "side_entries", camera[0] + " AND observed_at>=?",
+                    (self.camera_id, hour_ago),
+                )
                 payload["side_entries"] = {
-                    "count": self.scaled_entries(total),
-                    "last_hour": self.scaled_entries(last_hour),
+                    "count": self.scaled_entries(total, later),
+                    "last_hour": self.scaled_entries(last_hour, later_hour),
                     "count_raw": total,
                     "gate": self.side_entry_gate.model_dump(),
                 }
@@ -1373,8 +1414,29 @@ class LiveSession:
             passage["reviewed_replay"] = bool(evidence.get("reviewed_replay"))
         return payload
 
-    def scaled_entries(self, count: int) -> int:
-        return round(count * self.config.entry_count_scale)
+    @property
+    def _scaling(self) -> bool:
+        return self.config.entry_count_scale != 1 or self.config.entry_count_scale_after != 1
+
+    def _entries_after_cutoff(self, db, table: str, where: str, params: tuple) -> int:
+        if self.scale_cutoff is None:
+            return 0
+        return db.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE event_id=? AND observed_at>=? {where}",
+            (self.event_id, self.scale_cutoff, *params),
+        ).fetchone()[0]
+
+    def entry_weight(self, observed_at: str) -> float:
+        if self.scale_cutoff is not None and observed_at >= self.scale_cutoff:
+            return self.config.entry_count_scale_after
+        return self.config.entry_count_scale
+
+    def scaled_entries(self, count: int, after_cutoff: int = 0) -> int:
+        before = count - after_cutoff
+        return round(
+            before * self.config.entry_count_scale
+            + after_cutoff * self.config.entry_count_scale_after
+        )
 
     def calibrate(self, calibration: LiveCalibration) -> None:
         with self.lock:
@@ -1429,13 +1491,18 @@ def live_router() -> APIRouter:
                 continue
             slot[direction] += 1
             slot["linked"] += int(identity_id is not None)
+            if direction == "in":
+                slot["weighted_in"] = slot.get("weighted_in", 0.0) + value.entry_weight(
+                    observed_at
+                )
         return {
             "bucket_seconds": step,
             "buckets": [
                 {
                     "start": datetime.fromtimestamp(start, UTC).isoformat(),
-                    **counts,
-                    "in": value.scaled_entries(counts["in"]),
+                    "in": round(counts.pop("weighted_in", 0.0)),
+                    "out": counts["out"],
+                    "linked": counts["linked"],
                 }
                 for start, counts in buckets.items()
             ],
