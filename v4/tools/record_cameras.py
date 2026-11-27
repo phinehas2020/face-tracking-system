@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Continuous recording for Booth One, with HEVC compaction once raw footage passes a cap.
 
-Each camera's main RTSP stream is copied to 10-minute MP4 segments without re-encoding
-(no CPU or GPU cost to the counting service). When finished raw segments together pass
+Each camera's main RTSP video is copied to 10-minute MP4 segments. Audio can be
+converted to AAC when the camera supplies an MP4-incompatible codec. When raw segments pass
 --raw-cap-gb, the oldest are re-encoded to HEVC on the Mac's media engine
 (hevc_videotoolbox), checked with ffprobe, and only then is the raw segment removed.
 Recording pauses, and nothing is deleted, when free disk space falls below --min-free-gb.
@@ -50,7 +50,8 @@ def free_gb(path: Path) -> float:
     return shutil.disk_usage(path).free / 1e9
 
 
-def record(name: str, url: str, root: Path, segment: int, min_free: float, resume_free: float):
+def record(name: str, url: str, root: Path, segment: int, min_free: float, resume_free: float,
+           audio_codec: str):
     folder = root / "raw" / name
     folder.mkdir(parents=True, exist_ok=True)
     backoff = 5
@@ -76,8 +77,10 @@ def record(name: str, url: str, root: Path, segment: int, min_free: float, resum
             "0:v",
             "-map",
             "0:a?",
-            "-c",
+            "-c:v",
             "copy",
+            "-c:a",
+            audio_codec,
             "-f",
             "segment",
             "-segment_time",
@@ -296,6 +299,8 @@ def main():
     parser.add_argument("--segment-seconds", type=int, default=600)
     parser.add_argument("--raw-cap-gb", type=float, default=5.0)
     parser.add_argument("--hevc-bitrate", default="2500k")
+    parser.add_argument("--audio-codec", choices=("copy", "aac"), default="copy",
+                        help="encode AAC for cameras whose audio cannot be copied into MP4")
     parser.add_argument(
         "--archive",
         type=Path,
@@ -323,6 +328,8 @@ def main():
                 "-y",
                 "-rtsp_transport",
                 "tcp",
+                "-timeout",
+                "15000000",
                 "-i",
                 url,
                 "-t",
@@ -331,14 +338,16 @@ def main():
                 "0:v",
                 "-map",
                 "0:a?",
-                "-c",
+                "-c:v",
                 "copy",
+                "-c:a",
+                args.audio_codec,
                 str(out),
             ]
             threads.append(
-                (name, out, subprocess.Popen(command, stderr=subprocess.PIPE, text=True))
+                (name, url, out, subprocess.Popen(command, stderr=subprocess.PIPE, text=True))
             )
-        for name, out, process in threads:
+        for name, url, out, process in threads:
             process.wait()
             size = out.stat().st_size if out.exists() else 0
             print(
@@ -355,7 +364,8 @@ def main():
     workers = [
         threading.Thread(
             target=record,
-            args=(n, u, args.root, args.segment_seconds, args.min_free_gb, args.resume_free_gb),
+            args=(n, u, args.root, args.segment_seconds, args.min_free_gb, args.resume_free_gb,
+                  args.audio_codec),
             daemon=True,
         )
         for n, u in cams
