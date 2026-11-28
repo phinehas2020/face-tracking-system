@@ -5,6 +5,8 @@ Each camera's main RTSP video is copied to 10-minute MP4 segments. Audio can be
 converted to AAC when the camera supplies an MP4-incompatible codec. When raw segments pass
 --raw-cap-gb, the oldest are re-encoded to HEVC on the Mac's media engine
 (hevc_videotoolbox), checked with ffprobe, and only then is the raw segment removed.
+With --keep-original they are moved to the archive unchanged instead, keeping the camera's
+own quality for offline recounts, usually at the cost of more space.
 Recording pauses, and nothing is deleted, when free disk space falls below --min-free-gb.
 Camera credentials are read from cameras.json and never logged.
 """
@@ -210,7 +212,31 @@ def move_to_external(root: Path, external: Path) -> None:
         log("moved to the drive", source.name)
 
 
-def compact(root: Path, cap_bytes: int, bitrate: str, min_age: float, external: Path | None = None):
+def archive_original(source: Path, target: Path) -> None:
+    """Move a finished raw segment into the archive unchanged (--keep-original).
+
+    On the same disk this is a rename. Onto the archive drive it is copied, flushed to the drive,
+    and checked for size and a matching ffprobe duration before the raw segment is removed, so
+    a power cut or a bad copy never costs footage.
+    """
+    if source.stat().st_dev == target.parent.stat().st_dev:
+        os.replace(source, target)
+        return
+    partial = target.with_suffix(".partial.mp4")
+    with open(source, "rb") as src, open(partial, "wb") as dst:
+        shutil.copyfileobj(src, dst, 8 << 20)
+        dst.flush()
+        os.fsync(dst.fileno())
+    want, got = duration(source), duration(partial)
+    if partial.stat().st_size != source.stat().st_size or want <= 0 or abs(got - want) > 1.0:
+        partial.unlink(missing_ok=True)
+        raise OSError(f"copy of {source.name} failed its size or duration check; raw kept")
+    partial.replace(target)
+    source.unlink()
+
+
+def compact(root: Path, cap_bytes: int, bitrate: str | None, min_age: float,
+            external: Path | None = None):
     raw, reported = root / "raw", {}
     while not stop.is_set():
         try:
@@ -229,6 +255,11 @@ def compact(root: Path, cap_bytes: int, bitrate: str, min_age: float, external: 
             source = min(segments, key=lambda f: f.stat().st_mtime)
             target = archive / source.parent.name / source.name
             target.parent.mkdir(parents=True, exist_ok=True)
+            if bitrate is None:  # --keep-original
+                size = source.stat().st_size
+                archive_original(source, target)
+                log("archived original", source.name, f"{size / 1e6:.0f} MB")
+                continue
             partial = target.with_suffix(".partial.mp4")
             command = [
                 "nice",
@@ -299,6 +330,11 @@ def main():
     parser.add_argument("--segment-seconds", type=int, default=600)
     parser.add_argument("--raw-cap-gb", type=float, default=5.0)
     parser.add_argument("--hevc-bitrate", default="2500k")
+    parser.add_argument(
+        "--keep-original",
+        action="store_true",
+        help="move finished raw segments to the archive unchanged instead of re-encoding them",
+    )
     parser.add_argument("--audio-codec", choices=("copy", "aac"), default="copy",
                         help="encode AAC for cameras whose audio cannot be copied into MP4")
     parser.add_argument(
@@ -373,13 +409,24 @@ def main():
     workers.append(
         threading.Thread(
             target=compact,
-            args=(args.root, int(args.raw_cap_gb * 1e9), args.hevc_bitrate, 90, args.archive),
+            args=(
+                args.root,
+                int(args.raw_cap_gb * 1e9),
+                None if args.keep_original else args.hevc_bitrate,
+                90,
+                args.archive,
+            ),
             daemon=True,
         )
     )
     for worker in workers:
         worker.start()
-    log("recorder started for", ", ".join(n for n, _ in cams), f"raw cap {args.raw_cap_gb} GB")
+    log(
+        "recorder started for",
+        ", ".join(n for n, _ in cams),
+        f"raw cap {args.raw_cap_gb} GB",
+        "keeping originals" if args.keep_original else f"HEVC {args.hevc_bitrate}",
+    )
     while not stop.is_set():
         stop.wait(5)
     for worker in workers:
