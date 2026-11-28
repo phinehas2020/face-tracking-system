@@ -250,6 +250,27 @@ def test_entry_schedule_weights_each_entry_by_the_scale_then_in_force(tmp_path, 
     assert sum(bucket["in"] for bucket in buckets) == 23
 
 
+def test_history_days_add_up_to_the_published_count(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from ingress.live import live_router
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    session = make_session(tmp_path, monkeypatch, entry_count_scale=1.5)
+    for hours in (5, 3, 1):
+        moment = (now - timedelta(hours=hours)).isoformat(timespec="milliseconds")
+        add_passages(session, ["in"], moment, f"h{hours}")
+    assert session.snapshot()["counts"]["in"] == 4  # round(3 x 1.5)
+    app = FastAPI()
+    app.include_router(live_router())
+    app.state.live = session
+    client = TestClient(app)
+    hourly = client.get("/api/live/history?hours=6&bucket_minutes=60").json()["buckets"]
+    assert sum(bucket["in"] for bucket in hourly) == 4  # not 3 x round(1.5) = 6
+    recent = client.get("/api/live/history?hours=2&bucket_minutes=60").json()["buckets"]
+    assert sum(bucket["in"] for bucket in recent) == 4 - 3  # round(4.5) - round(3.0)
+
+
 @pytest.mark.parametrize("item", [{"from": "2026-11-27T12:00:00", "scale": 1.5},
                                   {"from": "2026-11-27T12:00:00-06:00", "scale": -1}])
 def test_entry_schedule_needs_zones_and_sane_scales(tmp_path, monkeypatch, item):

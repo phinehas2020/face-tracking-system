@@ -1524,10 +1524,14 @@ def live_router() -> APIRouter:
                 "SELECT observed_at,direction,identity_id FROM passages WHERE event_id=?",
                 (value.event_id,),
             ).fetchall()
+        weighted_before = 0.0
         for observed_at, direction, identity_id in rows:
             try:
                 moment = datetime.fromisoformat(observed_at).timestamp()
             except ValueError:
+                continue
+            if moment < first and direction == "in":
+                weighted_before += value.entry_weight(observed_at)
                 continue
             slot = buckets.get(int(moment // step) * step)
             if slot is None or direction not in ("in", "out"):
@@ -1538,12 +1542,19 @@ def live_router() -> APIRouter:
                 slot["weighted_in"] = slot.get("weighted_in", 0.0) + value.entry_weight(
                     observed_at
                 )
+        # Round the running weighted total rather than each bucket, so any run of buckets (a
+        # day, say) adds up to the same rounded figure as the published count.
+        running = weighted_before
+        for start in sorted(buckets):
+            low = round(running)
+            running += buckets[start].pop("weighted_in", 0.0)
+            buckets[start]["in"] = round(running) - low
         return {
             "bucket_seconds": step,
             "buckets": [
                 {
                     "start": datetime.fromtimestamp(start, UTC).isoformat(),
-                    "in": round(counts.pop("weighted_in", 0.0)),
+                    "in": counts["in"],
                     "out": counts["out"],
                     "linked": counts["linked"],
                 }
