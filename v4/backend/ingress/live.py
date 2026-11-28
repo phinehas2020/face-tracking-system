@@ -205,6 +205,11 @@ class CameraConfig:
     entry_count_scale: float = 1.0
     entry_count_scale_until: str | None = None
     entry_count_scale_after: float = 1.0
+    # A dated list of {"from": ISO time with zone, "scale": x} that takes over from its first
+    # "from" on: each entry is weighted by the latest scale whose "from" has passed, so a whole
+    # day can be corrected period by period from an audit of the station's recordings. Raw
+    # counts stay in the database. A scale of 0 leaves out set-up and test crossings.
+    entry_count_schedule: list[dict] | None = None
     # False runs a counting-only station: no face detection or recognition, which frees
     # the GPU for the person detector.
     faces: bool = True
@@ -266,6 +271,17 @@ class LiveSession:
             if cutoff.tzinfo is None:
                 raise ValueError("entry_count_scale_until must include a timezone")
             self.scale_cutoff = cutoff.astimezone(UTC).isoformat(timespec="milliseconds")
+        self.scale_schedule: list[tuple[str, float]] = []
+        for item in self.config.entry_count_schedule or []:
+            start, scale = datetime.fromisoformat(item["from"]), item["scale"]
+            if start.tzinfo is None:
+                raise ValueError("entry_count_schedule times must include a timezone")
+            if not (isinstance(scale, int | float) and math.isfinite(scale) and 0 <= scale <= 10):
+                raise ValueError("entry_count_schedule scales must be between 0 and 10")
+            self.scale_schedule.append(
+                (start.astimezone(UTC).isoformat(timespec="milliseconds"), float(scale))
+            )
+        self.scale_schedule.sort()
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.calibration = LiveCalibration()
@@ -1371,10 +1387,9 @@ class LiveSession:
                 (self.event_id,),
             ).fetchall()
             raw = {"in": 0, "out": 0, **{row[0]: row[1] for row in rows}}
-            later = self._entries_after_cutoff(
-                db, "passages", "AND direction='in'", ()
-            )
-            payload["counts"] = {**raw, "in": self.scaled_entries(raw["in"], later)}
+            payload["counts"] = {
+                **raw, "in": self.weighted_entries(db, "passages", "AND direction='in'")
+            }
             if self._scaling:
                 payload["counts_raw"] = raw
             if self.side_entry_gate is not None:
@@ -1387,14 +1402,12 @@ class LiveSession:
                     (hour_ago, self.event_id, self.camera_id),
                 ).fetchone()
                 camera = ("AND camera_id=?", (self.camera_id,))
-                later = self._entries_after_cutoff(db, "side_entries", *camera)
-                later_hour = self._entries_after_cutoff(
-                    db, "side_entries", camera[0] + " AND observed_at>=?",
-                    (self.camera_id, hour_ago),
-                )
                 payload["side_entries"] = {
-                    "count": self.scaled_entries(total, later),
-                    "last_hour": self.scaled_entries(last_hour, later_hour),
+                    "count": self.weighted_entries(db, "side_entries", *camera),
+                    "last_hour": self.weighted_entries(
+                        db, "side_entries", camera[0] + " AND observed_at>=?",
+                        (self.camera_id, hour_ago),
+                    ),
                     "count_raw": total,
                     "gate": self.side_entry_gate.model_dump(),
                 }
@@ -1416,7 +1429,11 @@ class LiveSession:
 
     @property
     def _scaling(self) -> bool:
-        return self.config.entry_count_scale != 1 or self.config.entry_count_scale_after != 1
+        return (
+            self.config.entry_count_scale != 1
+            or self.config.entry_count_scale_after != 1
+            or bool(self.scale_schedule)
+        )
 
     def _entries_after_cutoff(self, db, table: str, where: str, params: tuple) -> int:
         if self.scale_cutoff is None:
@@ -1427,6 +1444,9 @@ class LiveSession:
         ).fetchone()[0]
 
     def entry_weight(self, observed_at: str) -> float:
+        for start, scale in reversed(self.scale_schedule):
+            if observed_at >= start:
+                return scale
         if self.scale_cutoff is not None and observed_at >= self.scale_cutoff:
             return self.config.entry_count_scale_after
         return self.config.entry_count_scale
@@ -1437,6 +1457,29 @@ class LiveSession:
             before * self.config.entry_count_scale
             + after_cutoff * self.config.entry_count_scale_after
         )
+
+    def weighted_entries(self, db, table: str, where: str = "", params: tuple = ()) -> int:
+        """Entries in TABLE matching WHERE, each weighted by the scale in force when it was seen."""
+
+        def count(low: str | None = None, high: str | None = None) -> int:
+            sql, args = f"SELECT COUNT(*) FROM {table} WHERE event_id=? {where}", [self.event_id, *params]
+            if low is not None:
+                sql, args = sql + " AND observed_at>=?", [*args, low]
+            if high is not None:
+                sql, args = sql + " AND observed_at<?", [*args, high]
+            return db.execute(sql, args).fetchone()[0]
+
+        first = self.scale_schedule[0][0] if self.scale_schedule else None
+        before = count(high=first)
+        after_cutoff = count(self.scale_cutoff, first) if self.scale_cutoff is not None else 0
+        total = (
+            (before - after_cutoff) * self.config.entry_count_scale
+            + after_cutoff * self.config.entry_count_scale_after
+        )
+        for index, (start, scale) in enumerate(self.scale_schedule):
+            end = self.scale_schedule[index + 1][0] if index + 1 < len(self.scale_schedule) else None
+            total += count(start, end) * scale
+        return round(total)
 
     def calibrate(self, calibration: LiveCalibration) -> None:
         with self.lock:

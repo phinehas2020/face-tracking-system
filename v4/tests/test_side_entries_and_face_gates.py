@@ -221,6 +221,42 @@ def test_entry_scale_changes_at_the_cutoff_without_rescaling_earlier_entries(
     assert sum(bucket["in"] for bucket in buckets) == 30
 
 
+def test_entry_schedule_weights_each_entry_by_the_scale_then_in_force(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from ingress.live import live_router
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    central = timezone(timedelta(hours=-6))
+    muted, later = now - timedelta(hours=3), now - timedelta(hours=1)
+    session = make_session(
+        tmp_path, monkeypatch, entry_count_scale=2.0,
+        entry_count_schedule=[
+            {"from": later.astimezone(central).isoformat(), "scale": 1.5},
+            {"from": muted.astimezone(central).isoformat(), "scale": 0},
+        ],
+    )
+    stamp = lambda moment: moment.isoformat(timespec="milliseconds")  # noqa: E731
+    add_passages(session, ["in"] * 4, stamp(muted - timedelta(minutes=5)), "before")
+    add_passages(session, ["in"] * 6 + ["out"], stamp(muted + timedelta(minutes=5)), "muted")
+    add_passages(session, ["in"] * 10, stamp(later + timedelta(minutes=5)), "after")
+    snapshot = session.snapshot()
+    assert snapshot["counts"] == {"in": 23, "out": 1}  # 4 x 2.0 + 6 x 0 + 10 x 1.5
+    assert snapshot["counts_raw"] == {"in": 20, "out": 1}
+    app = FastAPI()
+    app.include_router(live_router())
+    app.state.live = session
+    buckets = TestClient(app).get("/api/live/history?bucket_minutes=60").json()["buckets"]
+    assert sum(bucket["in"] for bucket in buckets) == 23
+
+
+@pytest.mark.parametrize("item", [{"from": "2026-11-27T12:00:00", "scale": 1.5},
+                                  {"from": "2026-11-27T12:00:00-06:00", "scale": -1}])
+def test_entry_schedule_needs_zones_and_sane_scales(tmp_path, monkeypatch, item):
+    with pytest.raises(ValueError, match="entry_count_schedule"):
+        make_session(tmp_path, monkeypatch, entry_count_schedule=[item])
+
+
 def test_entry_scale_cutoff_needs_a_timezone(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="timezone"):
         make_session(tmp_path, monkeypatch, entry_count_scale_until="2026-11-27T12:00:00")
